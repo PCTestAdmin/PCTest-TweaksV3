@@ -1,0 +1,461 @@
+# -----------------------------
+# Kombiniertes Netzwerk-, FPS-, RAM- und Software-Optimierungs-Skript
+# -----------------------------
+
+$asciiLogo = @"
+ _______  _______ _________ _______  _______ _________
+(  ____ )(  ____ \(  ____ \(  ____ \(  ____ \__   __/
+| (    )|| (    \/   ) (   | (    \/| (    \/   ) (   
+| (____)|| |         | |   | (__    | (_____    | |   
+|  _____)| |         | |   |  __)   (_____  )   | |   
+| (      | |         | |   | (            ) |   | |   
+| )      | (____/\   | |   | (____/\/\____) |   | |   
+|/       (_______/   )_(   (_______/\_______)   )_(   
+"@
+
+
+# Funktion zur Anzeige der PC-Hardware
+function Show-HardwareInfo {
+    Clear-Host
+    Write-Host "`n$asciiLogo" -ForegroundColor Magenta
+    Write-Host "`n=================================" -ForegroundColor Yellow
+    Write-Host "      💻 System-Informationen      " -ForegroundColor Cyan
+    Write-Host "=================================" -ForegroundColor Yellow
+
+    $ramModules = Get-CimInstance Win32_PhysicalMemory | Select-Object Manufacturer, Speed, Capacity
+    $ramTotal = ($ramModules | Measure-Object -Property Capacity -Sum).Sum / 1GB
+    $ramDetails = $ramModules | ForEach-Object { "$(($_.Capacity / 1GB) -as [int]) GB - $($_.Manufacturer) - $($_.Speed) MHz" }
+
+    $cpu = Get-CimInstance Win32_Processor | Select-Object Name
+    $gpu = Get-CimInstance Win32_VideoController | Select-Object Name
+
+    Write-Host "🖥  CPU: $($cpu.Name)" -ForegroundColor Green
+    Write-Host "🎮 GPU: $($gpu.Name)" -ForegroundColor Green
+    Write-Host "💾 RAM: $ramTotal GB (Details unten)" -ForegroundColor Green
+    $ramDetails | ForEach-Object { Write-Host "   - $_" -ForegroundColor Green }
+    Write-Host "=================================" -ForegroundColor Yellow
+    Start-Sleep 3
+    Clear-Host
+}
+
+# Funktion zur FPS-Optimierung
+function Apply-FPSOptimizations {
+    Clear-Host
+    Write-Host "`n$asciiLogo" -ForegroundColor Magenta
+    Write-Host "`n🎮 FPS-Optimierung wird angewendet..." -ForegroundColor Cyan
+
+    # Höchstleistungs-Energiemodus aktivieren
+    powercfg -setactive SCHEME_MIN
+    Write-Host "✅ Energieoptionen auf Höchstleistung gesetzt." -ForegroundColor Green
+
+	# Deaktiviert Hintergrund-Apps zur Reduzierung der CPU-Auslastung
+	Write-Host "Deaktiviere Hintergrund-Apps..."
+	Get-AppxPackage | Where-Object {$_.NonRemovable -eq $false} | ForEach-Object { Stop-Process -Name $_.Name -ErrorAction SilentlyContinue }
+
+
+	# Deaktiviert unnötige Windows-Dienste (mit Vorsicht verwenden!)
+	Write-Host "Deaktiviere unnötige Windows-Dienste..."
+	$services = @("DiagTrack", "SysMain", "WSearch", "RemoteRegistry", "XboxGipSvc", "TabletInputService")
+	foreach ($service in $services) {
+    Stop-Service -Name $service -Force -ErrorAction SilentlyContinue
+	if (Get-Service -Name $service -ErrorAction SilentlyContinue) {
+    Set-Service -Name $service -StartupType Disabled
+	}
+
+	}
+	
+    # Windows-Animationen deaktivieren
+    reg add "HKCU\Control Panel\Desktop" /v "FontSmoothing" /t REG_SZ /d 2 /f | Out-Null  
+    reg add "HKCU\Software\Microsoft\Windows\DWM" /v "EnableAeroPeek" /t REG_DWORD /d 0 /f | Out-Null  
+    Write-Host "✅ Windows-Animationen und Aero Peek deaktiviert." -ForegroundColor Green
+
+    # Game Mode aktivieren
+    reg add "HKCU\Software\Microsoft\GameBar" /v "AllowAutoGameMode" /t REG_DWORD /d 1 /f | Out-Null
+    Write-Host "✅ Windows Game Mode aktiviert." -ForegroundColor Green
+
+    # GPU-Optimierung (Hardwarebeschleunigung aktivieren)
+    reg add "HKLM\SOFTWARE\Microsoft\Windows\Dwm" /v "EnableHardwareAcceleratedGPU" /t REG_DWORD /d 1 /f | Out-Null
+    Write-Host "✅ Hardwarebeschleunigung für die GPU aktiviert." -ForegroundColor Green
+
+    # CPU-Optimierung (Hintergrundprozesse priorisieren)
+    reg add "HKLM\SYSTEM\CurrentControlSet\Control\PriorityControl" /v "Win32PrioritySeparation" /t REG_DWORD /d 26 /f | Out-Null
+    Write-Host "✅ CPU-Priorität für Anwendungen optimiert." -ForegroundColor Green
+
+    # DirectX-Optimierung
+    reg add "HKLM\SOFTWARE\Microsoft\DirectDraw" /v "EmulationOnly" /t REG_DWORD /d 0 /f | Out-Null
+    reg add "HKLM\SOFTWARE\Microsoft\Direct3D" /v "MaxFrameLatency" /t REG_DWORD /d 1 /f | Out-Null
+    Write-Host "✅ DirectX optimiert für minimale Latenz." -ForegroundColor Green
+
+    Write-Host "🚀 FPS-Optimierung abgeschlossen!" -ForegroundColor Yellow
+    Start-Sleep 3
+    Clear-Host
+}
+
+# Funktion zur Installation von speedtest-cli (falls nicht vorhanden)
+function Install-SpeedtestCLI {
+    $speedtestExePath = "C:\Program Files\Speedtest\speedtest.exe"  # Zielpfad für die Installation
+
+    # Überprüfe, ob speedtest.exe bereits existiert
+    if (-not (Test-Path $speedtestExePath)) {
+        Write-Host "❌ Speedtest.exe nicht gefunden. Starte die Installation..."
+
+        # Stelle sicher, dass das Verzeichnis existiert
+        $dir = [System.IO.Path]::GetDirectoryName($speedtestExePath)
+        if (-not (Test-Path $dir)) {
+            New-Item -ItemType Directory -Force -Path $dir
+        }
+
+        # Lade die speedtest-cli von der offiziellen Seite herunter
+        $url = "https://install.speedtest.net/app/cli/ookla-speedtest-1.1.1-win64.zip"
+        $zipPath = "$dir\speedtest.zip"
+        
+        # Lade die ZIP-Datei herunter
+        Invoke-WebRequest -Uri $url -OutFile $zipPath
+        Write-Host "✅ Speedtest CLI wurde heruntergeladen."
+
+        # Entpacke die ZIP-Datei
+        Expand-Archive -Path $zipPath -DestinationPath $dir -Force
+        Write-Host "✅ Speedtest CLI wurde entpackt."
+
+        # Lösche die ZIP-Datei nach der Installation
+        Remove-Item -Path $zipPath -Force
+
+        Write-Host "✅ Speedtest CLI wurde erfolgreich installiert!" -ForegroundColor Green
+    } else {
+        Write-Host "✅ Speedtest.exe ist bereits installiert!" -ForegroundColor Green
+    }
+}
+
+# Funktion zur Messung der Netzwerkgeschwindigkeit
+function Get-NetworkSpeed {
+    $speedtestExePath = "C:\Program Files\Speedtest\speedtest.exe"  # Stelle sicher, dass der Pfad korrekt ist
+
+    # Installiere speedtest-cli, wenn nicht vorhanden
+    Install-SpeedtestCLI
+
+    if (Test-Path $speedtestExePath) {
+        # Führe den Speedtest aus und akzeptiere sowohl die Lizenz als auch die Datenschutzrichtlinie
+        $speedtestOutput = & $speedtestExePath --accept-license --accept-gdpr --progress=no --format=json | ConvertFrom-Json
+
+        return @{
+            Ping     = [math]::Round($speedtestOutput.ping.latency , 2)
+            Download = [math]::Round($speedtestOutput.download.bandwidth / 125000, 2)
+            Upload   = [math]::Round($speedtestOutput.upload.bandwidth / 125000, 2)
+        }
+    } else {
+        Write-Host "❌ Die Datei 'speedtest.exe' wurde im angegebenen Pfad nicht gefunden. Bitte überprüfe den Pfad." -ForegroundColor Red
+        return $null
+    }
+}
+
+function Optimize-Network {
+    Clear-Host
+    Write-Host "`n$asciiLogo" -ForegroundColor Magenta
+    Write-Host "`n🌐 Wende Netzwerk-Optimierungen an..." -ForegroundColor Cyan
+
+    $adapter = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' }
+    
+    if ($adapter) {
+        Write-Host "Zurücksetzen des Netzwerkadapters: $($adapter.Name)"
+        Disable-NetAdapter -Name $adapter.Name -Confirm:$false | Out-Null
+        Start-Sleep -Seconds 5
+        Enable-NetAdapter -Name $adapter.Name -Confirm:$false | Out-Null
+        Write-Host "✅ Netzwerkadapter zurückgesetzt." -ForegroundColor Green
+    } else {
+        Write-Host "❌ Kein aktiver Netzwerkadapter gefunden." -ForegroundColor Red
+        return
+    }
+
+    Write-Host "Ändere DNS-Server auf Google DNS (8.8.8.8 und 8.8.4.4) für Adapter: $($adapter.Name)"
+    try {
+        Set-DnsClientServerAddress -InterfaceIndex $adapter.InterfaceIndex -ServerAddresses ('8.8.8.8', '8.8.4.4') | Out-Null
+        Write-Host "✅ DNS-Server erfolgreich geändert." -ForegroundColor Green
+    } catch {
+        Write-Host "❌ Fehler beim Ändern des DNS-Servers: $_" -ForegroundColor Red
+    }
+
+    Write-Host "Setze MTU-Wert auf 1500 für Adapter: $($adapter.Name)"
+    try {
+        netsh interface ipv4 set subinterface "$($adapter.Name)" mtu=1500 store=persistent | Out-Null
+        Write-Host "✅ MTU-Wert erfolgreich geändert." -ForegroundColor Green
+    } catch {
+        Write-Host "❌ Fehler beim Setzen des MTU-Werts: $_" -ForegroundColor Red
+    }
+
+    Write-Host "Deaktiviere Windows TCP/IP Autotuning..."
+    netsh interface tcp set global autotuninglevel=disabled | Out-Null
+    Write-Host "✅ Autotuning erfolgreich deaktiviert." -ForegroundColor Green
+
+    Write-Host "Aktiviere TCP/IP Optimierungen..."
+    netsh interface tcp set global ecncapability=disabled | Out-Null
+    netsh interface tcp set global rss=enabled | Out-Null
+    netsh interface tcp set global timestamps=disabled | Out-Null
+    netsh interface tcp set global nonsackrttresiliency=disabled | Out-Null
+    netsh interface tcp set global maxsynretransmissions=2 | Out-Null
+    netsh interface tcp set global fastopen=enabled | Out-Null
+    Write-Host "✅ TCP/IP Optimierungen erfolgreich aktiviert." -ForegroundColor Green
+
+    # Deaktivieren des Nagle-Algorithmus
+    $interfaces = Get-WmiObject Win32_NetworkAdapterConfiguration | Where-Object { $_.IPEnabled -eq $true }
+    foreach ($interface in $interfaces) {
+        $interfacePath = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$($interface.SettingID)"
+        if (Test-Path $interfacePath) {
+            New-ItemProperty -Path $interfacePath -Name "TcpAckFrequency" -Value 1 -PropertyType DWord -Force | Out-Null
+            New-ItemProperty -Path $interfacePath -Name "TCPNoDelay" -Value 1 -PropertyType DWord -Force | Out-Null
+            Write-Host "✅ Nagle-Algorithmus deaktiviert für Schnittstelle: $($interface.Description)" -ForegroundColor Green
+        } else {
+            Write-Host "❌ Schnittstelle mit SettingID $($interface.SettingID) nicht gefunden!" -ForegroundColor Red
+        }
+    }
+
+    # TCP-Autotuning-Level zurücksetzen
+    netsh int tcp set global autotuninglevel=normal | Out-Null  
+    Write-Host "✅ TCP-Autotuning-Level gesetzt." -ForegroundColor Green
+
+    # DNS-Cache leeren
+    ipconfig /flushdns | Out-Null  
+    Write-Host "✅ DNS-Cache geleert." -ForegroundColor Green
+
+    Write-Host "`n✅ Alle Netzwerkoptimierungen abgeschlossen!" -ForegroundColor Green
+    Start-Sleep 3
+    Clear-Host
+}
+
+# Funktion zum Speedtest
+function Run-Speedtest {
+    Clear-Host
+    Write-Host "`n🚀 Speedtest wird durchgeführt..." -ForegroundColor Cyan
+    $speed = Get-NetworkSpeed
+    Write-Host "[Speedtest] Ping: $($speed.Ping) ms, Download: $($speed.Download) Mbps, Upload: $($speed.Upload) Mbps" -ForegroundColor Green
+    Start-Sleep 5
+}
+
+function Optimize-RAM {
+    Clear-Host
+    Write-Host "`n$asciiLogo" -ForegroundColor Magenta
+    Write-Host "`n🧠 Starte RAM-Optimierung..." -ForegroundColor Cyan
+
+    $beforeRAM = (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1024
+    Write-Host "[Vorher] Freier RAM: $beforeRAM MB" -ForegroundColor Red
+
+    # Hintergrundprozesse beenden
+    $processesToKill = @("OneDrive", "Skype", "Discord", "Teams", "Steam", "EpicGamesLauncher", "Battle.net", "chrome", "firefox", "msedge", "opera", "brave")
+    foreach ($proc in $processesToKill) {
+        if (Get-Process -Name $proc -ErrorAction SilentlyContinue) {
+            Stop-Process -Name $proc -Force
+            Write-Host "✅ $proc wurde geschlossen!" -ForegroundColor Green
+        }
+    }
+
+    # Speicherverwaltung optimieren
+    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" -Name "DisablePagingExecutive" -Value 1 -Type DWord -Force
+    Write-Host "✅ Speicherverwaltung optimiert!" -ForegroundColor Green
+
+    $afterRAM = (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1024
+    Write-Host "[Nachher] Freier RAM: $afterRAM MB" -ForegroundColor Green
+
+    Write-Host "🚀 RAM-Optimierung abgeschlossen!" -ForegroundColor Yellow
+    Start-Sleep 3
+    Clear-Host
+}
+
+# Funktion zum Aktualisieren von Software mit winget
+function Upgrade-Software {
+    Clear-Host
+    Write-Host "`n[+] Aktualisiere installierte Software..." -ForegroundColor Cyan
+    try {
+        winget upgrade --all 
+    } catch {
+        Write-Host "[✖] Fehler beim Aktualisieren von Software." -ForegroundColor Red
+    }
+    Write-Host "[✔] Software-Upgrade abgeschlossen." -ForegroundColor Green
+    Start-Sleep 3
+    Clear-Host
+}
+
+# Funktion zur Datenträger-Optimierung
+function Optimize-Storage {
+    Clear-Host
+    Write-Host "`n$asciiLogo" -ForegroundColor Magenta
+    Write-Host "`n💾 Starte Datenträger-Optimierung..." -ForegroundColor Cyan
+
+    # Ermittlung des freien Speicherplatzes vor der Optimierung
+    $drive = Get-PSDrive C
+    $beforeStorage = [math]::Round($drive.Free / 1MB, 2)
+    Write-Host "[Vorher] Freier Speicherplatz: $beforeStorage MB" -ForegroundColor Red
+
+    # Datenträgerbereinigung (ohne Löschen wichtiger Systemdateien)
+    Write-Host "🧹 Führe Datenträgerbereinigung aus..." -ForegroundColor Yellow
+    Start-Process -NoNewWindow -Wait -FilePath "cleanmgr.exe" -ArgumentList "/sagerun:1"
+
+    # Defragmentierung (nur für HDDs, SSDs werden optimiert)
+    Write-Host "🚀 Optimiere Laufwerk..." -ForegroundColor Yellow
+    Optimize-Volume -DriveLetter C
+
+    # Ermittlung des freien Speicherplatzes nach der Optimierung
+    $drive = Get-PSDrive C
+    $afterStorage = [math]::Round($drive.Free / 1MB, 2)
+    Write-Host "[Nachher] Freier Speicherplatz: $afterStorage MB" -ForegroundColor Green
+
+    Write-Host "✅ Datenträger-Optimierung abgeschlossen!" -ForegroundColor Yellow
+    Start-Sleep 3
+    Clear-Host
+}
+
+
+
+function Enable-SystemRestore {
+    # Überprüfen, ob die Systemwiederherstellung auf dem Systemlaufwerk aktiviert ist
+$restoreStatus = Get-WmiObject -Class Win32_ShadowCopy
+
+if ($restoreStatus -eq $null) {
+    Write-Host "Systemwiederherstellung ist nicht aktiviert. Versuche, sie zu aktivieren..."
+
+    # Systemwiederherstellung auf dem C-Laufwerk aktivieren
+    Enable-ComputerRestore -Drive "C:\"
+
+    Write-Host "Systemwiederherstellung wurde erfolgreich aktiviert!"
+} else {
+    Write-Host "Systemwiederherstellung ist bereits aktiviert."
+}
+
+# Wiederherstellungspunkt erstellen
+try {
+    # Wiederherstellungspunkt erstellen ohne den Tag-Parameter
+    Checkpoint-Computer -Description "Wiederherstellungspunkt über PowerShell erstellt"
+    Write-Host "Wiederherstellungspunkt erfolgreich erstellt."
+} catch {
+    Write-Host "Es gab ein Problem beim Erstellen des Wiederherstellungspunkts: $_"
+}
+
+}
+function Deinstall-Bloatware {
+	Clear-Host
+    # Hole alle installierten Apps
+    $apps = Get-AppxPackage
+
+    # Liste von Apps, die als Bloatware betrachtet werden und entfernt werden können
+    $bloatwareApps = @(
+        "Microsoft.XboxApp",
+        "Microsoft.XboxGamingOverlay",
+        "Microsoft.ZuneMusic",
+        "Microsoft.ZuneVideo",
+        "Microsoft.MicrosoftSolitaireCollection",
+        "Microsoft.YourPhone",
+        "Microsoft.People",
+        "Microsoft.Microsoft3DViewer",
+        "Microsoft.MicrosoftNews",
+        "Microsoft.MicrosoftWeather",
+        "Microsoft.MicrosoftOfficeHub",
+        "Microsoft.GetHelp",
+        "Microsoft.GetStarted",
+        "Microsoft.MicrosoftStickyNotes",
+        "Microsoft.OneDrive", # Wenn du OneDrive nicht verwenden möchtest
+        "Microsoft.SkypeApp"
+    )
+
+    Write-Host "`n### Überprüfe installierte Apps... ###" -ForegroundColor Yellow
+    Start-Sleep -Seconds 3  # 3 Sekunden warten
+
+    # Schleife durch alle Apps
+    foreach ($app in $bloatwareApps) {
+        Write-Host "Überprüfe App: $app" -ForegroundColor Cyan
+        
+
+        # Überprüfe, ob die App in den installierten Apps vorhanden ist
+        $installedApp = $apps | Where-Object { $_.Name -eq $app }
+
+        if ($installedApp) {
+            Write-Host "Finde Bloatware: $app" -ForegroundColor Yellow
+            Start-Sleep -Seconds 1  # 1 Sekunde warten
+
+            try {
+                # Entferne die App
+                Write-Host "Entferne Bloatware: $app" -ForegroundColor Cyan
+                Start-Sleep -Seconds 1  # 1 Sekunde warten
+                Remove-AppxPackage -Package $installedApp.PackageFullName -ErrorAction Stop
+                Write-Host "✅ $app wurde entfernt!" -ForegroundColor Green
+            }
+            catch {
+                Write-Host "Fehler beim Entfernen der App: $app. Fehler: $_" -ForegroundColor Red
+            }
+        }
+        else {
+            Write-Host "❌ Die App '$app' ist bereits nicht mehr installiert." -ForegroundColor Red
+        }
+    }
+
+    Write-Host "`n### Bloatware-Überprüfung abgeschlossen. ###" -ForegroundColor Yellow
+    Start-Sleep -Seconds 3  # 3 Sekunden warten, bevor das Skript beendet wird
+}
+
+
+
+
+
+
+
+
+
+
+# Hauptmenü mit der einmaligen Frage nach dem Wiederherstellungspunkt
+function Show-Menu {
+    Clear-Host
+    Write-Host "`n$asciiLogo" -ForegroundColor Magenta
+
+    # Frage nach Wiederherstellungspunkt nur einmal stellen
+    $createRestorePoint = Read-Host "Möchten Sie einen Wiederherstellungspunkt erstellen? (J/N)"
+    if ($createRestorePoint -eq "J" -or $createRestorePoint -eq "j") {
+        Create-RestorePoint
+    }
+
+    while ($true) {
+        Clear-Host
+        Write-Host "`n$asciiLogo" -ForegroundColor Magenta
+        Write-Host "`n=================================" -ForegroundColor Yellow
+        Write-Host "`nBitte wählen Sie eine Option:" -ForegroundColor Cyan
+        Write-Host "1. FPS Optimierung" -ForegroundColor Cyan
+        Write-Host "2. Netzwerk Menü" -ForegroundColor Cyan
+        Write-Host "3. RAM Optimierung" -ForegroundColor Cyan
+        Write-Host "4. Software-Update" -ForegroundColor Cyan
+        Write-Host "5. Datenträger-Optimierung" -ForegroundColor Cyan
+		Write-Host "6. Bloatware löschen" -ForegroundColor Cyan
+        Write-Host "7. Beenden" -ForegroundColor Cyan
+        $selection = Read-Host "Geben Sie Ihre Wahl ein" 
+
+        switch ($selection) {
+            "1" { Apply-FPSOptimizations }
+            "2" { Show-NetworkMenu }
+            "3" { Optimize-RAM }
+            "4" { Upgrade-Software }
+            "5" { Optimize-Storage }
+            "6" { Deinstall-Bloatware }
+			"7" { exit }
+            default { Write-Host "Ungültige Auswahl, bitte wählen Sie erneut." -ForegroundColor Red }
+        }
+    }
+}
+
+# Netzwerk-Untermenü
+function Show-NetworkMenu {
+    while ($true) {
+        Clear-Host
+        Write-Host "`n$asciiLogo" -ForegroundColor Magenta
+        Write-Host "`n=================================" -ForegroundColor Yellow
+        Write-Host "`n🌐 Netzwerk-Menü:" -ForegroundColor Cyan
+        Write-Host "1. Netzwerk optimieren" -ForegroundColor Cyan
+        Write-Host "2. Speedtest ausführen" -ForegroundColor Cyan
+        Write-Host "3. Zurück zum Hauptmenü" -ForegroundColor Cyan
+        $networkSelection = Read-Host "Geben Sie Ihre Wahl ein" 
+
+        switch ($networkSelection) {
+            "1" { Optimize-Network }
+            "2" { Run-Speedtest }
+            "3" { return }
+            default { Write-Host "Ungültige Auswahl, bitte wählen Sie erneut." -ForegroundColor Red }
+        }
+    }
+}
+
+# Starte das Skript mit dem Hauptmenü
+Show-Menu
