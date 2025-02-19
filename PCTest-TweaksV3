@@ -405,8 +405,9 @@ function Show-Menu {
 
     # Frage nach Wiederherstellungspunkt nur einmal stellen
     $createRestorePoint = Read-Host "Möchten Sie einen Wiederherstellungspunkt erstellen? (J/N)"
-    if ($createRestorePoint -eq "J" -or $createRestorePoint -eq "j") {
-        Create-RestorePoint
+    if ($createRestorePoint -eq "J" -or $createRestorePoint -eq "j") 
+	{
+        Enable-SystemRestore
     }
 
     while ($true) {
