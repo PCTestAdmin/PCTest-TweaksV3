@@ -2,6 +2,14 @@
 # Kombiniertes Netzwerk-, FPS-, RAM- und Software-Optimierungs-Skript
 # -----------------------------
 
+	# Starte das Skript mit Administratorrechten
+	if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
+    Write-Host "Bitte PowerShell als Administrator ausführen!"
+    Start-Sleep -Seconds 3
+    exit
+	}
+
+
 $asciiLogo = @"
  _______  _______ _________ _______  _______ _________
 (  ____ )(  ____ \(  ____ \(  ____ \(  ____ \__   __/
@@ -48,22 +56,20 @@ function Apply-FPSOptimizations {
     powercfg -setactive SCHEME_MIN
     Write-Host "✅ Energieoptionen auf Höchstleistung gesetzt." -ForegroundColor Green
 
-	# Deaktiviert Hintergrund-Apps zur Reduzierung der CPU-Auslastung
-	Write-Host "Deaktiviere Hintergrund-Apps..."
-	Get-AppxPackage | Where-Object {$_.NonRemovable -eq $false} | ForEach-Object { Stop-Process -Name $_.Name -ErrorAction SilentlyContinue }
+    # Hintergrund-Apps deaktivieren
+    Write-Host "🛑 Deaktiviere Hintergrund-Apps..."
+    Get-AppxPackage | Where-Object { $_.NonRemovable -eq $false } | ForEach-Object { Stop-Process -Name $_.Name -ErrorAction SilentlyContinue }
+    
+    # Unnötige Windows-Dienste deaktivieren
+    Write-Host "🛠️ Deaktiviere unnötige Windows-Dienste..."
+    $services = @("DiagTrack", "SysMain", "WSearch", "RemoteRegistry", "XboxGipSvc", "TabletInputService")
+    foreach ($service in $services) {
+        Stop-Service -Name $service -Force -ErrorAction SilentlyContinue
+        if (Get-Service -Name $service -ErrorAction SilentlyContinue) {
+            Set-Service -Name $service -StartupType Disabled
+        }
+    }
 
-
-	# Deaktiviert unnötige Windows-Dienste (mit Vorsicht verwenden!)
-	Write-Host "Deaktiviere unnötige Windows-Dienste..."
-	$services = @("DiagTrack", "SysMain", "WSearch", "RemoteRegistry", "XboxGipSvc", "TabletInputService")
-	foreach ($service in $services) {
-    Stop-Service -Name $service -Force -ErrorAction SilentlyContinue
-	if (Get-Service -Name $service -ErrorAction SilentlyContinue) {
-    Set-Service -Name $service -StartupType Disabled
-	}
-
-	}
-	
     # Windows-Animationen deaktivieren
     reg add "HKCU\Control Panel\Desktop" /v "FontSmoothing" /t REG_SZ /d 2 /f | Out-Null  
     reg add "HKCU\Software\Microsoft\Windows\DWM" /v "EnableAeroPeek" /t REG_DWORD /d 0 /f | Out-Null  
@@ -86,10 +92,38 @@ function Apply-FPSOptimizations {
     reg add "HKLM\SOFTWARE\Microsoft\Direct3D" /v "MaxFrameLatency" /t REG_DWORD /d 1 /f | Out-Null
     Write-Host "✅ DirectX optimiert für minimale Latenz." -ForegroundColor Green
 
-    Write-Host "🚀 FPS-Optimierung abgeschlossen!" -ForegroundColor Yellow
+    # NVIDIA GPU-Optimierung (Maximale Leistung)
+    if (Test-Path "HKLM:\SYSTEM\CurrentControlSet\Services\nvlddmkm") {
+        Write-Host "🎮 NVIDIA GPU optimieren..."
+        reg add "HKLM\SYSTEM\CurrentControlSet\Services\nvlddmkm\FTS" /v "Enable" /t REG_DWORD /d 0 /f | Out-Null
+        reg add "HKLM\SYSTEM\CurrentControlSet\Services\nvlddmkm\FTS" /v "EnableUlps" /t REG_DWORD /d 0 /f | Out-Null
+        Write-Host "✅ NVIDIA Fast Sync & ULPS deaktiviert." -ForegroundColor Green
+    }
+
+    # AMD GPU-Optimierung (ULPS deaktivieren)
+    if (Test-Path "HKLM:\SYSTEM\CurrentControlSet\Services\amdkmdag") {
+        Write-Host "🎮 AMD GPU optimieren..."
+        reg add "HKLM\SYSTEM\CurrentControlSet\Services\amdkmdag" /v "EnableUlps" /t REG_DWORD /d 0 /f | Out-Null
+        Write-Host "✅ AMD ULPS deaktiviert." -ForegroundColor Green
+    }
+
+    # Windows Explorer neu starten (Änderungen sofort umsetzen)
+    Write-Host "🔄 Windows Explorer wird neu gestartet..."
+    Stop-Process -Name "explorer" -Force
+    Start-Process "explorer"
+
+
+    # CPU-Scheduler optimieren (bessere Thread-Zuordnung für Games)
+    Write-Host "🧠 Optimierung der CPU-Scheduler für Spiele..."
+    reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" /v "LargeSystemCache" /t REG_DWORD /d 0 /f | Out-Null
+    reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" /v "IoPageLockLimit" /t REG_DWORD /d 4294967295 /f | Out-Null
+    Write-Host "✅ CPU-Scheduler optimiert." -ForegroundColor Green
+
+    Write-Host "🚀 FPS-Optimierung abgeschlossen! Starte deinen PC neu für die besten Ergebnisse." -ForegroundColor Yellow
     Start-Sleep 3
     Clear-Host
 }
+
 
 # Funktion zur Installation von speedtest-cli (falls nicht vorhanden)
 function Install-SpeedtestCLI {
@@ -389,13 +423,57 @@ function Deinstall-Bloatware {
     Start-Sleep -Seconds 3  # 3 Sekunden warten, bevor das Skript beendet wird
 }
 
+function Apply-CPUOptimizations {
+    Clear-Host
+    Write-Host "`n⚡ CPU-Optimierung wird gestartet..." -ForegroundColor Cyan
 
+    # Höchstleistungs-Energiemodus aktivieren
+    Write-Host "🔋 Setze Energieoptionen auf Höchstleistung..."
+    powercfg -setactive SCHEME_MIN
+    Write-Host "✅ Energieoptionen auf Höchstleistung gesetzt." -ForegroundColor Green
 
+    # CPU-Interrupt-Steuerung optimieren
+    Write-Host "🔧 Optimiere CPU-Interrupt-Steuerung..."
+    reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Kernel" /v "InterruptSteering" /t REG_DWORD /d 1 /f
+    Write-Host "✅ Interrupt-Steuerung optimiert." -ForegroundColor Green
 
+    # CPU-Parkmodus deaktivieren
+    Write-Host "🚀 Deaktiviere CPU-Parking..."
+    reg add "HKLM\SYSTEM\CurrentControlSet\Control\Power\PowerSettings\54533251-82be-4824-96c1-47b60b740d00\0cc5b647-c1df-4637-891a-dec35c318583" /v "Attributes" /t REG_DWORD /d 0 /f
+    Write-Host "✅ CPU-Parkmodus deaktiviert." -ForegroundColor Green
 
+    # Dynamische Frequenzskalierung abschalten
+    Write-Host "⚙️ Deaktiviere CPU-Drosselung..."
+    reg add "HKLM\SYSTEM\CurrentControlSet\Control\Power\PowerThrottling" /v "PowerThrottlingOff" /t REG_DWORD /d 1 /f
+    Write-Host "✅ CPU-Frequenz bleibt stabil." -ForegroundColor Green
 
+    # Prefetch & Superfetch deaktivieren
+    Write-Host "🛑 Deaktiviere Prefetch und Superfetch..."
+    reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters" /v "EnablePrefetcher" /t REG_DWORD /d 0 /f
+    reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters" /v "EnableSuperfetch" /t REG_DWORD /d 0 /f
+    Write-Host "✅ Prefetch und Superfetch deaktiviert." -ForegroundColor Green
 
+    # Mikrosekundengenaue Timer aktivieren
+    Write-Host "🕒 Optimiere CPU-Timer-Auflösung..."
+    reg add "HKLM\SYSTEM\CurrentControlSet\Control\TimeZoneInformation" /v "RealTimeIsUniversal" /t REG_DWORD /d 1 /f
+    Write-Host "✅ Hochpräziser CPU-Timer aktiviert." -ForegroundColor Green
 
+    # Hyper-Threading testen (nur für Intel)
+    if ($env:PROCESSOR_IDENTIFIER -match "Intel") {
+        Write-Host "🔍 Erkenne Intel Hyper-Threading..."
+        reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Kernel" /v "DisableHyperthreading" /t REG_DWORD /d 0 /f
+        Write-Host "✅ Hyper-Threading ist aktiviert (falls unterstützt)." -ForegroundColor Green
+    }
+
+    # Windows Explorer neu starten
+    Write-Host "🔄 Windows Explorer wird neu gestartet..."
+    Stop-Process -Name "explorer" -Force
+    Start-Process "explorer"
+
+    Write-Host "🚀 CPU-Optimierung abgeschlossen! Starte deinen PC neu für maximale Wirkung." -ForegroundColor Yellow
+	Start-Sleep 3
+    Clear-Host
+}
 
 
 # Hauptmenü mit der einmaligen Frage nach dem Wiederherstellungspunkt
@@ -416,22 +494,24 @@ function Show-Menu {
         Write-Host "`n=================================" -ForegroundColor Yellow
         Write-Host "`nBitte wählen Sie eine Option:" -ForegroundColor Cyan
         Write-Host "1. FPS Optimierung" -ForegroundColor Cyan
-        Write-Host "2. Netzwerk Menü" -ForegroundColor Cyan
-        Write-Host "3. RAM Optimierung" -ForegroundColor Cyan
-        Write-Host "4. Software-Update" -ForegroundColor Cyan
-        Write-Host "5. Datenträger-Optimierung" -ForegroundColor Cyan
-		Write-Host "6. Bloatware löschen" -ForegroundColor Cyan
-        Write-Host "7. Beenden" -ForegroundColor Cyan
+		Write-Host "2. CPU Optimierung" -ForegroundColor Cyan
+        Write-Host "3. Netzwerk Menü" -ForegroundColor Cyan
+        Write-Host "4. RAM Optimierung" -ForegroundColor Cyan
+        Write-Host "5. Software-Update" -ForegroundColor Cyan
+        Write-Host "6. Datenträger-Optimierung" -ForegroundColor Cyan
+		Write-Host "7. Bloatware löschen" -ForegroundColor Cyan
+        Write-Host "8. Beenden" -ForegroundColor Cyan
         $selection = Read-Host "Geben Sie Ihre Wahl ein" 
 
         switch ($selection) {
             "1" { Apply-FPSOptimizations }
-            "2" { Show-NetworkMenu }
-            "3" { Optimize-RAM }
-            "4" { Upgrade-Software }
-            "5" { Optimize-Storage }
-            "6" { Deinstall-Bloatware }
-			"7" { exit }
+			"2" { Apply-CPUOptimizations }
+            "3" { Show-NetworkMenu }
+            "4" { Optimize-RAM }
+            "5" { Upgrade-Software }
+            "6" { Optimize-Storage }
+            "7" { Deinstall-Bloatware }
+			"8" { exit }
             default { Write-Host "Ungültige Auswahl, bitte wählen Sie erneut." -ForegroundColor Red }
         }
     }
