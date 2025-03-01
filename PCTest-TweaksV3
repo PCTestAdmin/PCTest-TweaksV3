@@ -107,10 +107,7 @@ function Apply-FPSOptimizations {
         Write-Host "✅ AMD ULPS deaktiviert." -ForegroundColor Green
     }
 
-    # Windows Explorer neu starten (Änderungen sofort umsetzen)
-    Write-Host "🔄 Windows Explorer wird neu gestartet..."
-    Stop-Process -Name "explorer" -Force
-    Start-Process "explorer"
+    
 
 
     # CPU-Scheduler optimieren (bessere Thread-Zuordnung für Games)
@@ -370,23 +367,27 @@ function Deinstall-Bloatware {
 
     # Liste von Apps, die als Bloatware betrachtet werden und entfernt werden können
     $bloatwareApps = @(
-        "Microsoft.XboxApp",
-        "Microsoft.XboxGamingOverlay",
-        "Microsoft.ZuneMusic",
-        "Microsoft.ZuneVideo",
-        "Microsoft.MicrosoftSolitaireCollection",
-        "Microsoft.YourPhone",
-        "Microsoft.People",
-        "Microsoft.Microsoft3DViewer",
-        "Microsoft.MicrosoftNews",
-        "Microsoft.MicrosoftWeather",
-        "Microsoft.MicrosoftOfficeHub",
-        "Microsoft.GetHelp",
-        "Microsoft.GetStarted",
-        "Microsoft.MicrosoftStickyNotes",
-        "Microsoft.OneDrive", # Wenn du OneDrive nicht verwenden möchtest
-        "Microsoft.SkypeApp"
-    )
+    "Microsoft.XboxApp",
+    "Microsoft.XboxGamingOverlay",
+    "Microsoft.ZuneMusic",
+    "Microsoft.ZuneVideo",
+    "Microsoft.MicrosoftSolitaireCollection",
+    "Microsoft.YourPhone",
+    "Microsoft.People",
+    "Microsoft.Microsoft3DViewer",
+    "Microsoft.MicrosoftNews",
+    "Microsoft.MicrosoftWeather",
+    "Microsoft.MicrosoftOfficeHub",
+    "Microsoft.GetHelp",
+    "Microsoft.GetStarted",
+    "Microsoft.MicrosoftStickyNotes",
+	"Microsoft.Bing",
+    "Microsoft.OneDrive", # Wenn du OneDrive nicht verwenden möchtest
+    "Microsoft.SkypeApp",
+	"Microsoft.OneDriveSync",
+    "Microsoft.Lync"  # Skype for Business hinzugefügt
+)
+
 
     Write-Host "`n### Überprüfe installierte Apps... ###" -ForegroundColor Yellow
     Start-Sleep -Seconds 3  # 3 Sekunden warten
@@ -421,6 +422,7 @@ function Deinstall-Bloatware {
 
     Write-Host "`n### Bloatware-Überprüfung abgeschlossen. ###" -ForegroundColor Yellow
     Start-Sleep -Seconds 3  # 3 Sekunden warten, bevor das Skript beendet wird
+	Clear-Host
 }
 
 function Apply-CPUOptimizations {
@@ -465,12 +467,65 @@ function Apply-CPUOptimizations {
         Write-Host "✅ Hyper-Threading ist aktiviert (falls unterstützt)." -ForegroundColor Green
     }
 
-    # Windows Explorer neu starten
-    Write-Host "🔄 Windows Explorer wird neu gestartet..."
-    Stop-Process -Name "explorer" -Force
-    Start-Process "explorer"
+   
 
     Write-Host "🚀 CPU-Optimierung abgeschlossen! Starte deinen PC neu für maximale Wirkung." -ForegroundColor Yellow
+	Start-Sleep 3
+    Clear-Host
+}
+
+
+function Deactivate-Telemetry {
+    Clear-Host
+    # 1️⃣ Relevante Telemetrie-Dienste stoppen und deaktivieren
+$telemetryServices = @(
+    "DiagTrack",          # Connected User Experience and Telemetry
+    "dmwappushservice",   # Device Management Wireless Application Protocol
+    "WMPNetworkSvc"       # Windows Media Player Network
+)
+
+foreach ($service in $telemetryServices) {
+    Stop-Service -Name $service -Force -ErrorAction SilentlyContinue
+    Set-Service -Name $service -StartupType Disabled
+    Write-Host "Dienst deaktiviert: $service"
+}
+
+# 2️⃣ Aufgaben im Task Scheduler deaktivieren
+$telemetryTasks = @(
+    "\Microsoft\Windows\Application Experience\Microsoft Compatibility Appraiser",
+    "\Microsoft\Windows\Application Experience\ProgramDataUpdater",
+    "\Microsoft\Windows\Autochk\Proxy",
+    "\Microsoft\Windows\Customer Experience Improvement Program\Consolidator",
+    "\Microsoft\Windows\Customer Experience Improvement Program\UsbCeip",
+    "\Microsoft\Windows\DiskDiagnostic\Microsoft-Windows-DiskDiagnosticDataCollector"
+)
+
+foreach ($task in $telemetryTasks) {
+    schtasks /Change /TN $task /Disable
+    Write-Host "Aufgabe deaktiviert: $task"
+}
+
+# 3️⃣ Registry-Einträge zur Telemetrie-Anpassung
+$registryPaths = @{
+    "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection" = "AllowTelemetry";
+    "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\DataCollection" = "AllowTelemetry";
+    "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer" = "AllowTelemetry";
+    "HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppCompat" = "AITEnable";
+}
+
+foreach ($path in $registryPaths.Keys) {
+    if (!(Test-Path $path)) {
+        New-Item -Path $path -Force | Out-Null
+    }
+    Set-ItemProperty -Path $path -Name $registryPaths[$path] -Value 0
+    Write-Host "Registry-Wert gesetzt: $path -> $($registryPaths[$path])"
+}
+
+# 4️⃣ Windows Defender Cloud-Dienste deaktivieren (optional)
+Set-MpPreference -SubmitSamplesConsent NeverSend -MAPSReporting 0
+
+Write-Host "Microsoft Telemetrie wurde deaktiviert!"
+
 	Start-Sleep 3
     Clear-Host
 }
@@ -499,7 +554,7 @@ function Show-Menu {
         Write-Host "4. RAM Optimierung" -ForegroundColor Cyan
         Write-Host "5. Software-Update" -ForegroundColor Cyan
         Write-Host "6. Datenträger-Optimierung" -ForegroundColor Cyan
-		Write-Host "7. Bloatware löschen" -ForegroundColor Cyan
+		Write-Host "7. Windows Menü" -ForegroundColor Cyan
         Write-Host "8. Beenden" -ForegroundColor Cyan
         $selection = Read-Host "Geben Sie Ihre Wahl ein" 
 
@@ -510,7 +565,7 @@ function Show-Menu {
             "4" { Optimize-RAM }
             "5" { Upgrade-Software }
             "6" { Optimize-Storage }
-            "7" { Deinstall-Bloatware }
+            "7" { Show-WIndowsMenu }
 			"8" { exit }
             default { Write-Host "Ungültige Auswahl, bitte wählen Sie erneut." -ForegroundColor Red }
         }
@@ -538,5 +593,26 @@ function Show-NetworkMenu {
     }
 }
 
+
+# Netzwerk-Untermenü
+function Show-WIndowsMenu {
+    while ($true) {
+        Clear-Host
+        Write-Host "`n$asciiLogo" -ForegroundColor Magenta
+        Write-Host "`n=================================" -ForegroundColor Yellow
+        Write-Host "`n🌐 Windows-Menü:" -ForegroundColor Cyan
+        Write-Host "1. Bloatware deinstallieren" -ForegroundColor Cyan
+        Write-Host "2. Telemetry deaktivieren" -ForegroundColor Cyan
+        Write-Host "3. Zurück zum Hauptmenü" -ForegroundColor Cyan
+        $networkSelection = Read-Host "Geben Sie Ihre Wahl ein" 
+
+        switch ($networkSelection) {
+            "1" { Deinstall-Bloatware }
+            "2" { Deactivate-Telemetry }
+            "3" { return }
+            default { Write-Host "Ungültige Auswahl, bitte wählen Sie erneut." -ForegroundColor Red }
+        }
+    }
+}
 # Starte das Skript mit dem Hauptmenü
 Show-Menu
