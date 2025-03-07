@@ -417,45 +417,48 @@ function Deinstall-Bloatware {
 
 function Apply-CPUOptimizations {
     Clear-Host
-    Write-Host "`n⚡ CPU-Optimierung wird gestartet..." -ForegroundColor Cyan
+Write-Host "`n⚡ CPU-Optimierung wird gestartet..." -ForegroundColor Cyan
 
-    # Höchstleistungs-Energiemodus aktivieren
-    Write-Host "🔋 Setze Energieoptionen auf Höchstleistung..."
-    powercfg -setactive SCHEME_MIN
-    Write-Host "✅ Energieoptionen auf Höchstleistung gesetzt." -ForegroundColor Green
+# Höchstleistungs-Energiemodus aktivieren
+Write-Host "🔋 Setze Energieoptionen auf Höchstleistung..."
+powercfg -setactive SCHEME_MIN > $null
+Write-Host "✅ Energieoptionen auf Höchstleistung gesetzt." -ForegroundColor Green
 
-    # CPU-Interrupt-Steuerung optimieren
-    Write-Host "🔧 Optimiere CPU-Interrupt-Steuerung..."
-    reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Kernel" /v "InterruptSteering" /t REG_DWORD /d 1 /f
-    Write-Host "✅ Interrupt-Steuerung optimiert." -ForegroundColor Green
+# CPU-Interrupt-Steuerung optimieren
+Write-Host "🔧 Optimiere CPU-Interrupt-Steuerung..."
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Kernel" /v "InterruptSteering" /t REG_DWORD /d 1 /f > $null
+Write-Host "✅ Interrupt-Steuerung optimiert." -ForegroundColor Green
 
-    # CPU-Parkmodus deaktivieren
-    Write-Host "🚀 Deaktiviere CPU-Parking..."
-    reg add "HKLM\SYSTEM\CurrentControlSet\Control\Power\PowerSettings\54533251-82be-4824-96c1-47b60b740d00\0cc5b647-c1df-4637-891a-dec35c318583" /v "Attributes" /t REG_DWORD /d 0 /f
-    Write-Host "✅ CPU-Parkmodus deaktiviert." -ForegroundColor Green
+# CPU-Parkmodus deaktivieren
+Write-Host "🚀 Deaktiviere CPU-Parking..."
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Power\PowerSettings\54533251-82be-4824-96c1-47b60b740d00\0cc5b647-c1df-4637-891a-dec35c318583" /v "Attributes" /t REG_DWORD /d 0 /f > $null
+Write-Host "✅ CPU-Parkmodus deaktiviert." -ForegroundColor Green
 
-    # Dynamische Frequenzskalierung abschalten
-    Write-Host "⚙️ Deaktiviere CPU-Drosselung..."
-    reg add "HKLM\SYSTEM\CurrentControlSet\Control\Power\PowerThrottling" /v "PowerThrottlingOff" /t REG_DWORD /d 1 /f
-    Write-Host "✅ CPU-Frequenz bleibt stabil." -ForegroundColor Green
+# Dynamische Frequenzskalierung abschalten
+Write-Host "⚙️ Deaktiviere CPU-Drosselung..."
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Power\PowerThrottling" /v "PowerThrottlingOff" /t REG_DWORD /d 1 /f > $null
+Write-Host "✅ CPU-Frequenz bleibt stabil." -ForegroundColor Green
 
-    # Prefetch & Superfetch deaktivieren
-    Write-Host "🛑 Deaktiviere Prefetch und Superfetch..."
-    reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters" /v "EnablePrefetcher" /t REG_DWORD /d 0 /f
-    reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters" /v "EnableSuperfetch" /t REG_DWORD /d 0 /f
-    Write-Host "✅ Prefetch und Superfetch deaktiviert." -ForegroundColor Green
+# Prefetch & Superfetch deaktivieren
+Write-Host "🛑 Deaktiviere Prefetch und Superfetch..."
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters" /v "EnablePrefetcher" /t REG_DWORD /d 0 /f > $null
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters" /v "EnableSuperfetch" /t REG_DWORD /d 0 /f > $null
+Write-Host "✅ Prefetch und Superfetch deaktiviert." -ForegroundColor Green
 
-    # Mikrosekundengenaue Timer aktivieren
-    Write-Host "🕒 Optimiere CPU-Timer-Auflösung..."
-    reg add "HKLM\SYSTEM\CurrentControlSet\Control\TimeZoneInformation" /v "RealTimeIsUniversal" /t REG_DWORD /d 1 /f
-    Write-Host "✅ Hochpräziser CPU-Timer aktiviert." -ForegroundColor Green
+# Mikrosekundengenaue Timer aktivieren
+Write-Host "🕒 Optimiere CPU-Timer-Auflösung..."
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\TimeZoneInformation" /v "RealTimeIsUniversal" /t REG_DWORD /d 1 /f > $null
+Write-Host "✅ Hochpräziser CPU-Timer aktiviert." -ForegroundColor Green
 
-    # Hyper-Threading testen (nur für Intel)
-    if ($env:PROCESSOR_IDENTIFIER -match "Intel") {
-        Write-Host "🔍 Erkenne Intel Hyper-Threading..."
-        reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Kernel" /v "DisableHyperthreading" /t REG_DWORD /d 0 /f
-        Write-Host "✅ Hyper-Threading ist aktiviert (falls unterstützt)." -ForegroundColor Green
-    }
+# Hyper-Threading testen (nur für Intel)
+if ($env:PROCESSOR_IDENTIFIER -match "Intel") {
+    Write-Host "🔍 Erkenne Intel Hyper-Threading..."
+    reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Kernel" /v "DisableHyperthreading" /t REG_DWORD /d 0 /f > $null
+    Write-Host "✅ Hyper-Threading ist aktiviert (falls unterstützt)." -ForegroundColor Green
+}
+
+
+
 
    
 
@@ -522,61 +525,128 @@ Write-Host "Microsoft Telemetrie wurde deaktiviert!"
 
 
 # Hauptmenü mit der einmaligen Frage nach dem Wiederherstellungspunkt
+# Netzwerk-Untermenü
+function Show-NetworkMenu {
+    while ($true) {
+        Clear-Host
+        Write-Host "`n$asciiLogo" -ForegroundColor Magenta
+        Write-Host "`n=================================" -ForegroundColor Yellow
+        Write-Host "`n🌐 Netzwerk-Menü:" -ForegroundColor Cyan
+        Write-Host "1. Netzwerk optimieren" -ForegroundColor Cyan
+        Write-Host "2. Speedtest ausführen" -ForegroundColor Cyan
+        Write-Host "3. Zurück zum Hauptmenü" -ForegroundColor Cyan
+        $networkSelection = Read-Host "Geben Sie Ihre Wahl ein"
+
+        switch ($networkSelection) {
+            "1" { Optimize-Network }
+            "2" { Run-Speedtest }
+            "3" { return }  # Verwendet break, um zur vorherigen Schleife (Hauptmenü) zurückzukehren
+            default { Write-Host "Ungültige Auswahl, bitte wählen Sie erneut." -ForegroundColor Red }
+        }
+    }
+}
+
+function Show-PerformanceMenu {
+    while ($true) {
+        Clear-Host
+        Write-Host "`n$asciiLogo" -ForegroundColor Magenta
+        Write-Host "`n=================================" -ForegroundColor Yellow
+        Write-Host "`n🌐 Performance-Menü:" -ForegroundColor Cyan
+        Write-Host "1. FPS Optimierung" -ForegroundColor Cyan
+        Write-Host "2. CPU Optimierung" -ForegroundColor Cyan
+		Write-Host "3. RAM Optimierung" -ForegroundColor Cyan
+		Write-Host "4. Speicher Optimierung" -ForegroundColor Cyan
+        Write-Host "5. Zurück zum Hauptmenü" -ForegroundColor Cyan
+        $networkSelection = Read-Host "Geben Sie Ihre Wahl ein"
+
+        switch ($networkSelection) {
+            "1" { Apply-FPSOptimizations }
+            "2" { Apply-CPUOptimizations }
+			"3" { Optimize-RAM }
+			"4" { Optimize-Storage }
+            "5" { return }  # Verwendet break, um zur vorherigen Schleife (Hauptmenü) zurückzukehren
+            default { Write-Host "Ungültige Auswahl, bitte wählen Sie erneut." -ForegroundColor Red }
+        }
+    }
+}
+
+
+
+
+# Windows-Untermenü
+function Show-WindowsMenu {  # Achte darauf, dass der Funktionsname exakt übereinstimmt
+    while ($true) {
+        Clear-Host
+        Write-Host "`n$asciiLogo" -ForegroundColor Magenta
+        Write-Host "`n=================================" -ForegroundColor Yellow
+        Write-Host "`n🌐 Windows-Menü:" -ForegroundColor Cyan
+        Write-Host "1. Bloatware deinstallieren" -ForegroundColor Cyan
+        Write-Host "2. Telemetry deaktivieren" -ForegroundColor Cyan
+        Write-Host "3. Zurück zum Hauptmenü" -ForegroundColor Cyan
+        $networkSelection = Read-Host "Geben Sie Ihre Wahl ein"
+
+        switch ($networkSelection) {
+            "1" { Deinstall-Bloatware }
+            "2" { Deactivate-Telemetry }
+            "3" { return }  # Verwendet break, um zur vorherigen Schleife (Hauptmenü) zurückzukehren
+            default { Write-Host "Ungültige Auswahl, bitte wählen Sie erneut." -ForegroundColor Red }
+        }
+    }
+}
+
+
+# Hauptmenü mit der einmaligen Frage nach dem Wiederherstellungspunkt
 function Show-Menu {
     param (
         [string]$asciiLogo
     )
     
-	# Frage nach Wiederherstellungspunkt nur einmal stellen
+    # Frage nach Wiederherstellungspunkt nur einmal stellen
     $createRestorePoint = Read-Host "Möchten Sie einen Wiederherstellungspunkt erstellen? (J/N)"
     if ($createRestorePoint -eq "J" -or $createRestorePoint -eq "j") 
-	{
+    {
         Enable-SystemRestore
     }
-	
-	
+
     while ($true) {
         Clear-Host
-        
+
         # ASCII-Logo mittig ausgeben
         $logoLines = $asciiLogo -split "`n"
         foreach ($line in $logoLines) {
             Write-Host ($line.PadLeft(([console]::WindowWidth + $line.Length) / 2)) -ForegroundColor Magenta
         }
-        
+
         # "="-Zeichen mittig ausgeben
         Write-Host ("=" * 40).PadLeft(([console]::WindowWidth + 40) / 2) -ForegroundColor Yellow
         Write-Host ("Bitte wählen Sie eine Option:".PadLeft(([console]::WindowWidth + 25) / 2)) -ForegroundColor Cyan
         Write-Host ("=" * 40).PadLeft(([console]::WindowWidth + 40) / 2) -ForegroundColor Yellow
-        
+
         $options = @(
-            "1. FPS Optimierung",
-            "2. CPU Optimierung",
-            "3. Netzwerk Menü",
-            "4. RAM Optimierung",
-            "5. Software-Update",
-            "6. Datenträger-Optimierung",
-            "7. Windows Menü",
-            "8. Beenden"
+            "1. Performance-Menü",
+			"2. Netzwerk Menü",
+			"3. Software-Update",
+            "4. Windows Menü",
+			"5. Hardware Info",
+            "6. Beenden"
         )
-        
+
         foreach ($option in $options) {
             Write-Host ($option.PadLeft(([console]::WindowWidth + $option.Length) / 2)) -ForegroundColor Cyan
         }
-        
+
         Write-Host ("=" * 40).PadLeft(([console]::WindowWidth + 40) / 2) -ForegroundColor Yellow
-        
+
         $selection = Read-Host "Geben Sie Ihre Wahl ein"
-        
+
         switch ($selection) {
-            "1" { Apply-FPSOptimizations }
-            "2" { Apply-CPUOptimizations }
-            "3" { Show-NetworkMenu }
-            "4" { Optimize-RAM }
-            "5" { Upgrade-Software }
-            "6" { Optimize-Storage }
-            "7" { Show-WindowsMenu }
-            "8" { exit }
+            
+			"1" { Show-PerformanceMenu }
+            "2" { Show-NetworkMenu }  # Funktionsaufruf
+			"3" { Upgrade-Software }
+			"4" { Show-WindowsMenu } 
+			"5" { Show-HardwareInfo}						# Funktionsaufruf
+            "6" { exit }
             default { Write-Host "Ungültige Auswahl, bitte wählen Sie erneut." -ForegroundColor Red }
         }
     }
@@ -595,49 +665,3 @@ $asciiLogo = @"
 "@
 
 Show-Menu -asciiLogo $asciiLogo
-
-
-# Netzwerk-Untermenü
-function Show-NetworkMenu {
-    while ($true) {
-        Clear-Host
-        Write-Host "`n$asciiLogo" -ForegroundColor Magenta
-        Write-Host "`n=================================" -ForegroundColor Yellow
-        Write-Host "`n🌐 Netzwerk-Menü:" -ForegroundColor Cyan
-        Write-Host "1. Netzwerk optimieren" -ForegroundColor Cyan
-        Write-Host "2. Speedtest ausführen" -ForegroundColor Cyan
-        Write-Host "3. Zurück zum Hauptmenü" -ForegroundColor Cyan
-        $networkSelection = Read-Host "Geben Sie Ihre Wahl ein" 
-
-        switch ($networkSelection) {
-            "1" { Optimize-Network }
-            "2" { Run-Speedtest }
-            "3" { return }
-            default { Write-Host "Ungültige Auswahl, bitte wählen Sie erneut." -ForegroundColor Red }
-        }
-    }
-}
-
-
-# Netzwerk-Untermenü
-function Show-WIndowsMenu {
-    while ($true) {
-        Clear-Host
-        Write-Host "`n$asciiLogo" -ForegroundColor Magenta
-        Write-Host "`n=================================" -ForegroundColor Yellow
-        Write-Host "`n🌐 Windows-Menü:" -ForegroundColor Cyan
-        Write-Host "1. Bloatware deinstallieren" -ForegroundColor Cyan
-        Write-Host "2. Telemetry deaktivieren" -ForegroundColor Cyan
-        Write-Host "3. Zurück zum Hauptmenü" -ForegroundColor Cyan
-        $networkSelection = Read-Host "Geben Sie Ihre Wahl ein" 
-
-        switch ($networkSelection) {
-            "1" { Deinstall-Bloatware }
-            "2" { Deactivate-Telemetry }
-            "3" { return }
-            default { Write-Host "Ungültige Auswahl, bitte wählen Sie erneut." -ForegroundColor Red }
-        }
-    }
-}
-# Starte das Skript mit dem Hauptmenü
-Show-Menu
