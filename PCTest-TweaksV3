@@ -12,104 +12,227 @@
 
 
 
-# Funktion zur Anzeige der PC-Hardware
 function Show-HardwareInfo {
     Clear-Host
+    # Logo
     Write-Host "`n$asciiLogo" -ForegroundColor Magenta
-    Write-Host "`n=================================" -ForegroundColor Yellow
-    Write-Host "      💻 System-Informationen      " -ForegroundColor Cyan
-    Write-Host "=================================" -ForegroundColor Yellow
 
-    $ramModules = Get-CimInstance Win32_PhysicalMemory | Select-Object Manufacturer, Speed, Capacity
-    $ramTotal = ($ramModules | Measure-Object -Property Capacity -Sum).Sum / 1GB
-    $ramDetails = $ramModules | ForEach-Object { "$(($_.Capacity / 1GB) -as [int]) GB - $($_.Manufacturer) - $($_.Speed) MHz" }
+    # Sammle Basis-Infos
+    $osObj = Get-CimInstance Win32_OperatingSystem | Select-Object -First 1 Caption, Version, LastBootUpTime, OSArchitecture
+    $os = "$($osObj.Caption) (v$($osObj.Version))"
+    $uptime = ((Get-Date) - $osObj.LastBootUpTime).ToString("dd\.hh\:mm\:ss")
 
-    $cpu = Get-CimInstance Win32_Processor | Select-Object Name
-    $gpu = Get-CimInstance Win32_VideoController | Select-Object Name
+    $cpuObj = Get-CimInstance Win32_Processor | Select-Object -First 1 Name, NumberOfCores, NumberOfLogicalProcessors, MaxClockSpeed, Architecture
+    $cpuCores = $cpuObj.NumberOfCores
+    $cpuThreads = $cpuObj.NumberOfLogicalProcessors
+    $cpuSpeed = $cpuObj.MaxClockSpeed
+    $archMap = @{0='x86'; 1='MIPS'; 2='Alpha'; 3='PowerPC'; 5='ARM'; 6='Itanium-based'; 9='x64'}
+    if ($archMap.ContainsKey($cpuObj.Architecture)) {
+        $cpuArch = $archMap[$cpuObj.Architecture]
+    } else {
+        $cpuArch = $cpuObj.Architecture.ToString()
+    }
 
-    Write-Host "🖥  CPU: $($cpu.Name)" -ForegroundColor Green
-    Write-Host "🎮 GPU: $($gpu.Name)" -ForegroundColor Green
-    Write-Host "💾 RAM: $ramTotal GB (Details unten)" -ForegroundColor Green
-    $ramDetails | ForEach-Object { Write-Host "   - $_" -ForegroundColor Green }
-    Write-Host "=================================" -ForegroundColor Yellow
-    Start-Sleep 3
+    $gpuObj = Get-CimInstance Win32_VideoController | Select-Object -First 1 Name, @{n='VRAM_GB';e={[math]::Round($_.AdapterRAM/1GB,2)}}
+    $gpuVRAM = $gpuObj.VRAM_GB
+
+    $csObj = Get-CimInstance Win32_ComputerSystem | Select-Object Manufacturer, Model, Domain
+    # Precompute Domain
+    if ($csObj.Domain) { $domainValue = $csObj.Domain } else { $domainValue = 'Workgroup' }
+
+    # BIOS Release
+    $biosObj = Get-CimInstance Win32_BIOS | Select-Object -First 1 Manufacturer, SMBIOSBIOSVersion, ReleaseDate
+    try {
+        $biosDate = [Management.ManagementDateTimeConverter]::ToDateTime($biosObj.ReleaseDate).ToString('yyyy-MM-dd')
+    } catch {
+        $biosDate = 'Unknown'
+    }
+
+    $ramModules = Get-CimInstance Win32_PhysicalMemory | Select-Object Manufacturer, Speed, @{n='SizeGB';e={[math]::Round($_.Capacity/1GB)}}
+    $ramTotal = ($ramModules | Measure-Object SizeGB -Sum).Sum
+
+    $diskC = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'" | Select-Object -First 1 @{n='FreeGB';e={[math]::Round($_.FreeSpace/1GB,2)}}, @{n='SizeGB';e={[math]::Round($_.Size/1GB,2)}}
+
+    $netAdapter = Get-NetAdapter | Where-Object Status -eq 'Up' | Select-Object -First 1
+    $ipObj = Get-NetIPAddress -InterfaceIndex $netAdapter.InterfaceIndex -AddressFamily IPv4 | Select-Object -First 1 IPAddress
+    $mac = $netAdapter.MacAddress
+
+    # Aktuellen Energieplan erkennen
+    $guidLine = (powercfg /GetActiveScheme) 2>&1
+    if ($guidLine -match '\((.+)\)') { $planName = $Matches[1] } else { $planName = 'Unknown' }
+
+    $entries = @(
+        @{Label='OS'; Value=$os},
+        @{Label='Arch'; Value=$osObj.OSArchitecture},
+        @{Label='Uptime'; Value=$uptime},
+        @{Label='CPU'; Value="$cpuCores cores, $cpuThreads threads @ ${cpuSpeed}MHz"},
+        @{Label='CPU Arch'; Value=$cpuArch},
+        @{Label='GPU'; Value="$($gpuObj.Name) ($gpuVRAM GB VRAM)"},
+        @{Label='Motherboard'; Value="$($csObj.Manufacturer) $($csObj.Model)"},
+        @{Label='Domain'; Value=$domainValue},
+        @{Label='BIOS'; Value="$($biosObj.Manufacturer) $($biosObj.SMBIOSBIOSVersion) ($biosDate)"},
+        @{Label='RAM Total'; Value="$ramTotal GB"},
+        @{Label='Disk C:'; Value="Free: $($diskC.FreeGB) GB / $($diskC.SizeGB) GB"},
+        @{Label='IP Addr'; Value=$ipObj.IPAddress},
+        @{Label='MAC Addr'; Value=$mac},
+        @{Label='Power Plan'; Value=$planName},
+        @{Label='Computer'; Value=$env:COMPUTERNAME},
+        @{Label='User'; Value=$env:USERNAME}
+    )
+
+    # Bestimme Spaltenbreite
+    $maxLabel = ($entries | ForEach-Object {$_.Label.Length} | Measure-Object -Maximum).Maximum
+    $maxValue = ($entries | ForEach-Object {$_.Value.Length} | Measure-Object -Maximum).Maximum
+    $width = $maxLabel + $maxValue + 7
+    $line = '─' * $width
+
+    # Header
+    Write-Host "┌$line┐" -ForegroundColor Yellow
+    $title = 'System-Informationen'
+    $padTotal = $width - $title.Length
+    $leftPad = ' ' * [math]::Floor($padTotal/2)
+    $rightPad = ' ' * [math]::Ceiling($padTotal/2)
+    Write-Host "│$leftPad$title$rightPad│" -ForegroundColor Cyan
+    Write-Host "├$line┤" -ForegroundColor Yellow
+
+        # Einträge
+    foreach ($e in $entries) {
+        $lbl = $e.Label.PadRight($maxLabel)
+        # Force value to string to avoid non-string types
+        $strVal = [string]$e.Value
+        $val = $strVal.PadLeft($maxValue)
+        Write-Host ("│ {0} : {1} │" -f $lbl, $val) -ForegroundColor Green
+    }
+
+    # RAM Details
+    Write-Host "├$line┤" -ForegroundColor Yellow
+    Write-Host "│ RAM Module Details:".PadRight($width+2) + "│" -ForegroundColor Cyan
+    foreach ($m in $ramModules) {
+        $detail = ("{0} GB - {1} - {2} MHz" -f $m.SizeGB, $m.Manufacturer, $m.Speed)
+        Write-Host ("│   {0}" -f $detail).PadRight($width+2) + "│" -ForegroundColor Green
+    }
+
+    # Footer
+    Write-Host "└$line┘`n" -ForegroundColor Yellow
+    Start-Sleep -Seconds 7
     Clear-Host
 }
 
-# Funktion zur FPS-Optimierung
+
+
+
+
+
+
+
+
 function Apply-FPSOptimizations {
     Clear-Host
     Write-Host "`n$asciiLogo" -ForegroundColor Magenta
     Write-Host "`n🎮 FPS-Optimierung wird angewendet..." -ForegroundColor Cyan
 
-    # Höchstleistungs-Energiemodus aktivieren
+    # 1) Höchstleistungs-Energiemodus aktivieren
     powercfg -setactive SCHEME_MIN
-    Write-Host "✅ Energieoptionen auf Höchstleistung gesetzt." -ForegroundColor Green
+    Write-Host "✅ Energieplan: Höchstleistung" -ForegroundColor Green
 
-    # Hintergrund-Apps deaktivieren
-    Write-Host "🛑 Deaktiviere Hintergrund-Apps..."
-    Get-AppxPackage | Where-Object { $_.NonRemovable -eq $false } | ForEach-Object { Stop-Process -Name $_.Name -ErrorAction SilentlyContinue }
-    
-    # Unnötige Windows-Dienste deaktivieren
-    Write-Host "🛠️ Deaktiviere unnötige Windows-Dienste..."
-    $services = @("DiagTrack", "SysMain", "WSearch", "RemoteRegistry", "XboxGipSvc", "TabletInputService")
-    foreach ($service in $services) {
-        Stop-Service -Name $service -Force -ErrorAction SilentlyContinue
-        if (Get-Service -Name $service -ErrorAction SilentlyContinue) {
-            Set-Service -Name $service -StartupType Disabled
-        }
+    # 2) Hintergrund-Apps beenden
+    Write-Host "🛑 Beende Hintergrund-Apps..."
+    Get-AppxPackage | Where-Object { $_.NonRemovable -eq $false } |
+      ForEach-Object { Stop-Process -Name $_.Name -ErrorAction SilentlyContinue }
+    Write-Host "✅ Hintergrund-Apps gestoppt." -ForegroundColor Green
+
+    # 3) Unnötige Dienste deaktivieren
+    Write-Host "🛠️ Deaktiviere unnötige Dienste..."
+    $services = @("DiagTrack","SysMain","WSearch","RemoteRegistry","XboxGipSvc","TabletInputService")
+    foreach ($s in $services) {
+        Stop-Service -Name $s -Force -ErrorAction SilentlyContinue
+        Set-Service -Name $s -StartupType Disabled -ErrorAction SilentlyContinue
     }
+    Write-Host "✅ Dienste deaktiviert." -ForegroundColor Green
 
-    # Windows-Animationen deaktivieren
-    reg add "HKCU\Control Panel\Desktop" /v "FontSmoothing" /t REG_SZ /d 2 /f | Out-Null  
-    reg add "HKCU\Software\Microsoft\Windows\DWM" /v "EnableAeroPeek" /t REG_DWORD /d 0 /f | Out-Null  
-    Write-Host "✅ Windows-Animationen und Aero Peek deaktiviert." -ForegroundColor Green
+    # 4) Windows-Animationen & Aero Peek ausschalten
+    reg add "HKCU\Control Panel\Desktop" /v "FontSmoothing" /t REG_SZ /d 2 /f | Out-Null
+    reg add "HKCU\Software\Microsoft\Windows\DWM" /v "EnableAeroPeek" /t REG_DWORD /d 0 /f | Out-Null
+    Write-Host "✅ Animationen & Aero Peek deaktiviert." -ForegroundColor Green
 
-    # Game Mode aktivieren
-    reg add "HKCU\Software\Microsoft\GameBar" /v "AllowAutoGameMode" /t REG_DWORD /d 1 /f | Out-Null
-    Write-Host "✅ Windows Game Mode aktiviert." -ForegroundColor Green
+    # 5) Hardwarebeschleunigte GPU-Zeitplanung
+    reg add "HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" /v "HwSchMode" /t REG_DWORD /d 2 /f | Out-Null
+    Write-Host "✅ GPU-Zeitplanung aktiviert." -ForegroundColor Green
 
-    # GPU-Optimierung (Hardwarebeschleunigung aktivieren)
-    reg add "HKLM\SOFTWARE\Microsoft\Windows\Dwm" /v "EnableHardwareAcceleratedGPU" /t REG_DWORD /d 1 /f | Out-Null
-    Write-Host "✅ Hardwarebeschleunigung für die GPU aktiviert." -ForegroundColor Green
+    # 6) GameDVR & Game Bar deaktivieren
+    Write-Host "📹 Deaktiviere GameDVR & Game Bar..."
+    reg add "HKLM\SOFTWARE\Microsoft\PolicyManager\default\GameDVR" /v "AllowGameDVR" /t REG_DWORD /d 0 /f | Out-Null
+    reg add "HKCU\System\GameConfigStore" /v "GameDVR_FSEBehavior" /t REG_DWORD /d 2 /f | Out-Null
+    reg add "HKCU\Software\Microsoft\GameBar" /v "ShowStartupPanel" /t REG_DWORD /d 0 /f | Out-Null
+    Write-Host "✅ GameDVR & Game Bar deaktiviert." -ForegroundColor Green
 
-    # CPU-Optimierung (Hintergrundprozesse priorisieren)
-    reg add "HKLM\SYSTEM\CurrentControlSet\Control\PriorityControl" /v "Win32PrioritySeparation" /t REG_DWORD /d 26 /f | Out-Null
-    Write-Host "✅ CPU-Priorität für Anwendungen optimiert." -ForegroundColor Green
+    # 7) Fullscreen-Optimierungen abschalten
+    reg add "HKCU\System\GameConfigStore" /v "GameDVR_UseShortcutFSEBehaviour" /t REG_DWORD /d 2 /f | Out-Null
+    Write-Host "✅ Fullscreen-Optimierungen deaktiviert." -ForegroundColor Green
 
-    # DirectX-Optimierung
-    reg add "HKLM\SOFTWARE\Microsoft\DirectDraw" /v "EmulationOnly" /t REG_DWORD /d 0 /f | Out-Null
-    reg add "HKLM\SOFTWARE\Microsoft\Direct3D" /v "MaxFrameLatency" /t REG_DWORD /d 1 /f | Out-Null
-    Write-Host "✅ DirectX optimiert für minimale Latenz." -ForegroundColor Green
-
-    # NVIDIA GPU-Optimierung (Maximale Leistung)
+    # 8) NVIDIA Low-Latency & ULPS deaktivieren
     if (Test-Path "HKLM:\SYSTEM\CurrentControlSet\Services\nvlddmkm") {
-        Write-Host "🎮 NVIDIA GPU optimieren..."
-        reg add "HKLM\SYSTEM\CurrentControlSet\Services\nvlddmkm\FTS" /v "Enable" /t REG_DWORD /d 0 /f | Out-Null
-        reg add "HKLM\SYSTEM\CurrentControlSet\Services\nvlddmkm\FTS" /v "EnableUlps" /t REG_DWORD /d 0 /f | Out-Null
-        Write-Host "✅ NVIDIA Fast Sync & ULPS deaktiviert." -ForegroundColor Green
+        reg add "HKLM\SYSTEM\CurrentControlSet\Services\nvlddmkm\Parameters" /v "EnableUlps" /t REG_DWORD /d 0 /f | Out-Null
+        reg add "HKLM\SYSTEM\CurrentControlSet\Services\nvlddmkm\Parameters" /v "PowerMizerEnable" /t REG_DWORD /d 0 /f | Out-Null
+        Write-Host "✅ NVIDIA Low-Latency & ULPS deaktiviert." -ForegroundColor Green
     }
 
-    # AMD GPU-Optimierung (ULPS deaktivieren)
-    if (Test-Path "HKLM:\SYSTEM\CurrentControlSet\Services\amdkmdag") {
-        Write-Host "🎮 AMD GPU optimieren..."
-        reg add "HKLM\SYSTEM\CurrentControlSet\Services\amdkmdag" /v "EnableUlps" /t REG_DWORD /d 0 /f | Out-Null
-        Write-Host "✅ AMD ULPS deaktiviert." -ForegroundColor Green
+    # 9) PCIe Energiesparmodus (ASPM) deaktivieren
+    powercfg /setacvalueindex SCHEME_MIN SUB_PCIEXPRESS ASPM 0 | Out-Null
+    Write-Host "✅ PCIe ASPM deaktiviert." -ForegroundColor Green
+
+    # 10) CPU C-States deaktivieren
+    Write-Host "🛑 Deaktiviere CPU C-States..."
+    reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Power" /v "CsEnabled" /t REG_DWORD /d 0 /f | Out-Null
+    Write-Host "✅ CPU C-States deaktiviert." -ForegroundColor Green
+
+    # 11) Netzwerk-Throttling & System-Responsiveness optimieren
+    Write-Host "📡 Optimiere Netzwerk-Performance..."
+    reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" /v "NetworkThrottlingIndex" /t REG_DWORD /d 4294967295 /f | Out-Null
+    reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" /v "SystemResponsiveness" /t REG_DWORD /d 0 /f | Out-Null
+    Write-Host "✅ Netzwerk-Throttling deaktiviert & Responsiveness hochgesetzt." -ForegroundColor Green
+
+    # 12) Prozess-Priorität & Affinität für Spielprozess
+    $game = Read-Host "Name deines Spiel-Prozesses (z.B. csgo, Fortnite)"
+    if (Get-Process -Name $game -ErrorAction SilentlyContinue) {
+        $p = Get-Process -Name $game
+        $p.PriorityClass = 'High'
+        $p.ProcessorAffinity = 0xF # Kerne 0-3
+        Write-Host "✅ Priorität & Affinität gesetzt für $game." -ForegroundColor Green
+    } else {
+        Write-Host "⚠️ Prozess $game nicht gefunden." -ForegroundColor Yellow
     }
 
-    
+    # 13) Windows Defender Echtzeitschutz deaktivieren
+    Write-Host "🛡️ Deaktiviere Windows Defender Echtzeitschutz..."
+    Set-MpPreference -DisableRealtimeMonitoring $true
+    Write-Host "✅ Defender Echtzeitschutz deaktiviert." -ForegroundColor Green
 
+    # 14) Xbox Live-Dienste deaktivieren
+    Write-Host "🎮 Deaktiviere Xbox Live-Dienste..."
+    $xbox = @("XblAuthManager","XblGameSave","XboxNetApiSvc")
+    foreach ($svc in $xbox) {
+        Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue
+        Set-Service -Name $svc -StartupType Disabled -ErrorAction SilentlyContinue
+    }
+    Write-Host "✅ Xbox Live-Dienste deaktiviert." -ForegroundColor Green
 
-    # CPU-Scheduler optimieren (bessere Thread-Zuordnung für Games)
-    Write-Host "🧠 Optimierung der CPU-Scheduler für Spiele..."
-    reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" /v "LargeSystemCache" /t REG_DWORD /d 0 /f | Out-Null
-    reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" /v "IoPageLockLimit" /t REG_DWORD /d 4294967295 /f | Out-Null
-    Write-Host "✅ CPU-Scheduler optimiert." -ForegroundColor Green
+    # 15) Fokusassistenz aktivieren (Quiet Hours)
+    Write-Host "🔕 Aktiviere Fokusassistenz (Quiet Hours)..."
+    reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings" /v "NOC_GLOBAL_SETTING_TOASTS_ENABLED" /t REG_DWORD /d 1 /f | Out-Null
+    Write-Host "✅ Fokusassistenz aktiviert." -ForegroundColor Green
 
-    Write-Host "🚀 FPS-Optimierung abgeschlossen! Starte deinen PC neu für die besten Ergebnisse." -ForegroundColor Yellow
+    # 16) Windows Tipps & Vorschläge deaktivieren
+    Write-Host "💡 Deaktiviere Windows Tipps & Vorschläge..."
+    reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" /v "SubscriptionsEnabled" /t REG_DWORD /d 0 /f | Out-Null
+    reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" /v "SystemPaneSuggestionsEnabled" /t REG_DWORD /d 0 /f | Out-Null
+    Write-Host "✅ Windows Tipps & Vorschläge deaktiviert." -ForegroundColor Green
+
+    Write-Host "🚀 FPS-Optimierung abgeschlossen! Starte deinen PC neu für maximale Wirkung." -ForegroundColor Yellow
     Start-Sleep 3
     Clear-Host
 }
+
 
 
 # Funktion zur Installation von speedtest-cli (falls nicht vorhanden)
@@ -172,94 +295,186 @@ function Get-NetworkSpeed {
 function Optimize-Network {
     Clear-Host
     Write-Host "`n$asciiLogo" -ForegroundColor Magenta
-    Write-Host "`n🌐 Wende Netzwerk-Optimierungen an..." -ForegroundColor Cyan
+    Write-Host "`n🌐 Netzwerk-Optimierungen werden angewendet..." -ForegroundColor Cyan
 
-    $adapter = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' }
-    
-    if ($adapter) {
-        Write-Host "Zurücksetzen des Netzwerkadapters: $($adapter.Name)"
-        Disable-NetAdapter -Name $adapter.Name -Confirm:$false | Out-Null
-        Start-Sleep -Seconds 5
-        Enable-NetAdapter -Name $adapter.Name -Confirm:$false | Out-Null
-        Write-Host "✅ Netzwerkadapter zurückgesetzt." -ForegroundColor Green
-    } else {
+    $adapter = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | Select-Object -First 1
+    if (-not $adapter) {
         Write-Host "❌ Kein aktiver Netzwerkadapter gefunden." -ForegroundColor Red
         return
     }
 
-    Write-Host "Ändere DNS-Server auf Google DNS (8.8.8.8 und 8.8.4.4) für Adapter: $($adapter.Name)"
-    try {
-        Set-DnsClientServerAddress -InterfaceIndex $adapter.InterfaceIndex -ServerAddresses ('8.8.8.8', '8.8.4.4') | Out-Null
-        Write-Host "✅ DNS-Server erfolgreich geändert." -ForegroundColor Green
-    } catch {
-        Write-Host "❌ Fehler beim Ändern des DNS-Servers: $_" -ForegroundColor Red
-    }
+    # 1) Adapter zurücksetzen
+    Write-Host "🔄 Setze Netzwerkadapter $($adapter.Name) zurück..."
+    Disable-NetAdapter -Name $adapter.Name -Confirm:$false | Out-Null; Start-Sleep 3
+    Enable-NetAdapter -Name $adapter.Name -Confirm:$false | Out-Null
+    Write-Host "✅ Adapter zurückgesetzt." -ForegroundColor Green
 
-    Write-Host "Setze MTU-Wert auf 1500 für Adapter: $($adapter.Name)"
-    try {
-        netsh interface ipv4 set subinterface "$($adapter.Name)" mtu=1500 store=persistent | Out-Null
-        Write-Host "✅ MTU-Wert erfolgreich geändert." -ForegroundColor Green
-    } catch {
-        Write-Host "❌ Fehler beim Setzen des MTU-Werts: $_" -ForegroundColor Red
-    }
+    # 2) DNS auf Google DNS setzen
+    Write-Host "🌐 Setze DNS-Server auf 8.8.8.8, 8.8.4.4..."
+    Set-DnsClientServerAddress -InterfaceIndex $adapter.InterfaceIndex -ServerAddresses ('8.8.8.8','8.8.4.4') | Out-Null
+    Write-Host "✅ DNS-Server gesetzt." -ForegroundColor Green
 
-    Write-Host "Deaktiviere Windows TCP/IP Autotuning..."
+    # 3) MTU auf 1500 setzen
+    Write-Host "⚙️ Setze MTU auf 1500..."
+    netsh interface ipv4 set subinterface "$($adapter.Name)" mtu=1500 store=persistent | Out-Null
+    Write-Host "✅ MTU geändert." -ForegroundColor Green
+
+    # 4) TCP Autotuning deaktivieren
+    Write-Host "🚫 Deaktiviere TCP Autotuning..."
     netsh interface tcp set global autotuninglevel=disabled | Out-Null
-    Write-Host "✅ Autotuning erfolgreich deaktiviert." -ForegroundColor Green
+    Write-Host "✅ Autotuning deaktiviert." -ForegroundColor Green
 
-    Write-Host "Aktiviere TCP/IP Optimierungen..."
+    # 5) ECN & SACK & Timestamps optimieren
+    Write-Host "📈 Aktiviere RSS, deaktiviere ECN, SACK, Timestamps..."
     netsh interface tcp set global ecncapability=disabled | Out-Null
     netsh interface tcp set global rss=enabled | Out-Null
     netsh interface tcp set global timestamps=disabled | Out-Null
     netsh interface tcp set global nonsackrttresiliency=disabled | Out-Null
-    netsh interface tcp set global maxsynretransmissions=2 | Out-Null
-    netsh interface tcp set global fastopen=enabled | Out-Null
-    Write-Host "✅ TCP/IP Optimierungen erfolgreich aktiviert." -ForegroundColor Green
+    Write-Host "✅ TCP-Parameter optimiert." -ForegroundColor Green
 
-    # Deaktivieren des Nagle-Algorithmus
-    $interfaces = Get-WmiObject Win32_NetworkAdapterConfiguration | Where-Object { $_.IPEnabled -eq $true }
-    foreach ($interface in $interfaces) {
-        $interfacePath = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$($interface.SettingID)"
-        if (Test-Path $interfacePath) {
-            New-ItemProperty -Path $interfacePath -Name "TcpAckFrequency" -Value 1 -PropertyType DWord -Force | Out-Null
-            New-ItemProperty -Path $interfacePath -Name "TCPNoDelay" -Value 1 -PropertyType DWord -Force | Out-Null
-            Write-Host "✅ Nagle-Algorithmus deaktiviert für Schnittstelle: $($interface.Description)" -ForegroundColor Green
-        } else {
-            Write-Host "❌ Schnittstelle mit SettingID $($interface.SettingID) nicht gefunden!" -ForegroundColor Red
+    # 6) TCP Fast Open aktivieren
+    Write-Host "🚀 Aktiviere TCP Fast Open..."
+    netsh interface tcp set global fastopen=enabled | Out-Null
+    Write-Host "✅ Fast Open aktiviert." -ForegroundColor Green
+
+    # 7) Nagle Algorithmus deaktivieren
+    Write-Host "🚫 Deaktiviere Nagle-Algorithmus..."
+    Get-WmiObject Win32_NetworkAdapterConfiguration | Where-Object {$_.IPEnabled} | ForEach-Object {
+        $path = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$($_.SettingID)"
+        if (Test-Path $path) {
+            New-ItemProperty -Path $path -Name "TcpAckFrequency" -Value 1 -PropertyType DWord -Force | Out-Null
+            New-ItemProperty -Path $path -Name "TCPNoDelay" -Value 1 -PropertyType DWord -Force | Out-Null
+            Write-Host "✅ Nagle für $($_.Description) deaktiviert." -ForegroundColor Green
         }
     }
 
-    # TCP-Autotuning-Level zurücksetzen
-    netsh int tcp set global autotuninglevel=normal | Out-Null  
-    Write-Host "✅ TCP-Autotuning-Level gesetzt." -ForegroundColor Green
+    # 8) RSC (Receive Side Coalescing) aktivieren
+    Write-Host "🔧 Aktiviere RSC für $($adapter.Name)..."
+    Enable-NetAdapterRsc -Name $adapter.Name | Out-Null
+    Write-Host "✅ RSC aktiviert." -ForegroundColor Green
 
-    # DNS-Cache leeren
-    ipconfig /flushdns | Out-Null  
+    # 9) Network Location Awareness (NlaSvc) deaktivieren
+    Write-Host "📍 Deaktiviere Network Location Awareness..."
+    try {
+        Stop-Service -Name NlaSvc -Force -ErrorAction SilentlyContinue
+        Set-Service -Name NlaSvc -StartupType Disabled | Out-Null
+        Write-Host "✅ Network Location Awareness deaktiviert." -ForegroundColor Green
+    } catch {
+        Write-Host "⚠️ Fehler beim Deaktivieren von NlaSvc: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+
+    # 10) QoS Packet Scheduler deaktivieren
+    Write-Host "📉 Deaktiviere QoS Packet Scheduler..."
+    Set-NetAdapterBinding -Name $adapter.Name -ComponentID ms_pacer -Enabled $false | Out-Null
+    Write-Host "✅ QoS Scheduler deaktiviert." -ForegroundColor Green
+
+    # 11) IPv6 deaktivieren
+    Write-Host "🌐 Deaktiviere IPv6..."
+    Disable-NetAdapterBinding -Name $adapter.Name -ComponentID ms_tcpip6 | Out-Null
+    Write-Host "✅ IPv6 deaktiviert." -ForegroundColor Green
+
+    # 12) LLMNR deaktivieren
+    Write-Host "🔒 Deaktiviere LLMNR..."
+    reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient" /v "EnableMulticast" /t REG_DWORD /d 0 /f | Out-Null
+    Write-Host "✅ LLMNR deaktiviert." -ForegroundColor Green
+
+    # 13) NetBIOS over TCP/IP deaktivieren
+    Write-Host "🚫 Deaktiviere NetBIOS over TCP/IP..."
+    Get-WmiObject Win32_NetworkAdapterConfiguration | Where-Object { $_.IPEnabled } | ForEach-Object {
+        $_.SetTcpipNetbios(2) | Out-Null
+        Write-Host "✅ NetBIOS für Adapter $($_.Description) deaktiviert." -ForegroundColor Green
+    }
+
+    # 14) Delivery Optimization deaktivieren
+    Write-Host "📦 Deaktiviere Windows Delivery Optimization..."
+    reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\DeliveryOptimization" /v "DODownloadMode" /t REG_DWORD /d 0 /f | Out-Null
+    Write-Host "✅ Delivery Optimization deaktiviert." -ForegroundColor Green
+
+    # 15) SMB Signing deaktivieren
+    Write-Host "🔐 Deaktiviere SMB Signing..."
+    reg add "HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" /v "RequireSecuritySignature" /t REG_DWORD /d 0 /f | Out-Null
+    Write-Host "✅ SMB Signing deaktiviert." -ForegroundColor Green
+
+    # 16) DNS Cache TTL erhöhen
+    Write-Host "⏳ Setze DNS Cache TTL auf 86400 Sekunden..."
+    reg add "HKLM\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters" /v "MaxCacheTtl" /t REG_DWORD /d 86400 /f | Out-Null
+    Write-Host "✅ DNS TTL angepasst." -ForegroundColor Green
+
+    # 17) ARP Cache Timeout reduzieren
+    Write-Host "🔄 Setze ARP Cache Timeout auf 120 Sekunden..."
+    reg add "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" /v "ArpCacheLife" /t REG_DWORD /d 120 /f | Out-Null
+    Write-Host "✅ ARP Timeout gesetzt." -ForegroundColor Green
+
+    # 18) DNS-Cache leeren
+    Write-Host "🧹 Leere DNS-Cache..."
+    ipconfig /flushdns | Out-Null
     Write-Host "✅ DNS-Cache geleert." -ForegroundColor Green
 
-    Write-Host "`n✅ Alle Netzwerkoptimierungen abgeschlossen!" -ForegroundColor Green
-    Start-Sleep 3
+    # 19) TCP Congestion Provider auf CTCP setzen
+    Write-Host "🚦 Setze TCP Congestion Provider auf CTCP..."
+    netsh interface tcp set global congestionprovider=ctcp | Out-Null
+    Write-Host "✅ CTCP als Congestion Provider aktiviert." -ForegroundColor Green
+
+    # 20) Teredo Tunneling deaktivieren
+    Write-Host "🚫 Deaktiviere Teredo Tunneling..."
+    netsh interface teredo set state disabled | Out-Null
+    Write-Host "✅ Teredo deaktiviert." -ForegroundColor Green
+
+    # 21) Energy Efficient Ethernet deaktivieren, falls verfügbar
+    Write-Host "🛑 Deaktiviere Energy Efficient Ethernet..."
+    $eee = Get-NetAdapterAdvancedProperty -Name $adapter.Name -ErrorAction SilentlyContinue |
+           Where-Object DisplayName -Match "Energy Efficient Ethernet"
+    if ($eee) {
+        Set-NetAdapterAdvancedProperty -Name $adapter.Name -DisplayName $eee.DisplayName -DisplayValue $eee.ValidValues[0] | Out-Null
+        Write-Host "✅ Energy Efficient Ethernet deaktiviert." -ForegroundColor Green
+    } else {
+        Write-Host "🟡 Energy Efficient Ethernet nicht unterstützt." -ForegroundColor Yellow
+    }
+
+    Write-Host "🚀 Netzwerk-Optimierung abgeschlossen! Starte deinen PC neu für volle Wirkung." -ForegroundColor Yellow
+    Start-Sleep -Seconds 3
     Clear-Host
 }
 
-# Funktion zum Speedtest
+
+
+
+
+
+
 function Run-Speedtest {
     Clear-Host
     Write-Host "`n🚀 Speedtest wird durchgeführt..." -ForegroundColor Cyan
+
     $speed = Get-NetworkSpeed
-    Write-Host "[Speedtest] Ping: $($speed.Ping) ms, Download: $($speed.Download) Mbps, Upload: $($speed.Upload) Mbps" -ForegroundColor Green
-    Start-Sleep 5
+    
+    $adapter = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | Select-Object -First 1
+
+    # Ausgabe-Schmuck
+    $width = 50
+    $line  = '─' * $width
+    Write-Host "`n┌$line┐" -ForegroundColor Yellow
+    Write-Host ("│ {0,-12}: {1,8} ms" -f 'Ping', $speed.Ping) -ForegroundColor Green
+    Write-Host ("│ {0,-12}: {1,8} Mbps" -f 'Download', $speed.Download) -ForegroundColor Green
+    Write-Host ("│ {0,-12}: {1,8} Mbps" -f 'Upload',   $speed.Upload) -ForegroundColor Green
+    Write-Host ("│ {0,-12}: {1,-24}" -f 'Adapter', $adapter.Name) -ForegroundColor Cyan
+    
+    Write-Host "└$line┘`n" -ForegroundColor Yellow
+
+    Start-Sleep -Seconds 5
 }
+
 
 function Optimize-RAM {
     Clear-Host
     Write-Host "`n$asciiLogo" -ForegroundColor Magenta
     Write-Host "`n🧠 Starte RAM-Optimierung..." -ForegroundColor Cyan
 
+    # 1) Freien RAM vorher auslesen
     $beforeRAM = (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1024
     Write-Host "[Vorher] Freier RAM: $beforeRAM MB" -ForegroundColor Red
 
-    # Hintergrundprozesse beenden
+    # 2) Hintergrundprozesse beenden
     $processesToKill = @("OneDrive", "Skype", "Discord", "Teams", "Steam", "EpicGamesLauncher", "Battle.net", "chrome", "firefox", "msedge", "opera", "brave")
     foreach ($proc in $processesToKill) {
         if (Get-Process -Name $proc -ErrorAction SilentlyContinue) {
@@ -268,60 +483,198 @@ function Optimize-RAM {
         }
     }
 
-    # Speicherverwaltung optimieren
-    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" -Name "DisablePagingExecutive" -Value 1 -Type DWord -Force
-    Write-Host "✅ Speicherverwaltung optimiert!" -ForegroundColor Green
+    # 3) Temporäre Dateien löschen
+    Write-Host "🗑️ Lösche temporäre Dateien..."
+    $temp = [IO.Path]::GetTempPath()
+    Get-ChildItem -Path $temp -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
+    Write-Host "✅ Temporäre Dateien entfernt." -ForegroundColor Green
 
+    # 4) Papierkorb leeren
+    Write-Host "🚮 Leere Papierkorb..."
+    try {
+        Clear-RecycleBin -Force -ErrorAction Stop
+        Write-Host "✅ Papierkorb erfolgreich geleert." -ForegroundColor Green
+    } catch {
+        Write-Host "❌ Fehler beim Leeren des Papierkorbs: $_" -ForegroundColor Red
+    }
+
+    # 5) Clipboard leeren
+    Write-Host "📋 Leere Zwischenablage..."
+    Set-Clipboard -Value $null
+    Write-Host "✅ Zwischenablage geleert." -ForegroundColor Green
+
+    # 6) System-Cache und Standby-Liste (sofern RAMMap installiert)
+    Write-Host "🧹 Bereinige Standby-Liste (RAMMap needed)..."
+    $ramMap = "$env:ProgramFiles\Sysinternals\RAMMap.exe"
+    if (Test-Path $ramMap) {
+        Start-Process -FilePath $ramMap -ArgumentList "/E" -Wait
+        Write-Host "✅ Standby-Liste bereinigt." -ForegroundColor Green
+    } else {
+        Write-Host "⚠️ RAMMap nicht gefunden, übersprungen." -ForegroundColor Yellow
+    }
+
+    # 7) Paging-Executive deaktivieren
+    Write-Host "⚙️ Deaktiviere Paging Executive..."
+    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" -Name "DisablePagingExecutive" -Value 1 -Type DWord -Force
+    Write-Host "✅ Paging Executive deaktiviert." -ForegroundColor Green
+
+    # 8) Umgebungsvariablen für memory trimming
+    Write-Host "💡 Konfiguriere Memory Trimming..."
+    reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" /v "ClearPageFileAtShutdown" /t REG_DWORD /d 1 /f | Out-Null
+    Write-Host "✅ Pagefile bei Shutdown gelöscht." -ForegroundColor Green
+
+    # 9) Nachher freier RAM anzeigen
     $afterRAM = (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1024
     Write-Host "[Nachher] Freier RAM: $afterRAM MB" -ForegroundColor Green
 
-    Write-Host "🚀 RAM-Optimierung abgeschlossen!" -ForegroundColor Yellow
+    Write-Host "🚀 RAM-Optimierung abgeschlossen! Starte deinen PC neu für maximale Wirkung." -ForegroundColor Yellow
     Start-Sleep 3
     Clear-Host
 }
 
-# Funktion zum Aktualisieren von Software mit winget
+
 function Upgrade-Software {
+    [CmdletBinding()]
+    param()
+
     Clear-Host
-    Write-Host "`n[+] Aktualisiere installierte Software..." -ForegroundColor Cyan
-    try {
-        winget upgrade --all 
-    } catch {
-        Write-Host "[✖] Fehler beim Aktualisieren von Software." -ForegroundColor Red
+    Write-Host "`n[+] Starte Software-Upgrade..." -ForegroundColor Cyan
+
+    # 0) Winget prüfen
+    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+        Write-Error "winget ist nicht installiert oder nicht im Pfad gefunden. Abbruch."; return
     }
-    Write-Host "[✔] Software-Upgrade abgeschlossen." -ForegroundColor Green
-    Start-Sleep 3
-    Clear-Host
+
+    # 1) Quellen aktualisieren
+    Write-Host "[>] Aktualisiere Winget-Quellen..." -ForegroundColor Yellow
+    try { winget source update | Out-Null; Write-Host "[✔] Quellen aktualisiert." -ForegroundColor Green } 
+    catch { Write-Host "[✖] Fehler: $($_.Exception.Message)" -ForegroundColor Red }
+
+    # 2) Verfügbare Updates abrufen
+    Write-Host "[i] Ermittele verfügbare Updates..." -ForegroundColor Yellow
+    $output = winget upgrade 2>&1
+    # Header und Trennzeilen entfernen
+    $data = $output -split "`n" | Where-Object { $_ -and $_ -notmatch '^(Usage:|Die folgenden|-----)' } | Select-Object -Skip 2
+    if (-not $data) { Write-Host "[✔] Keine Updates gefunden." -ForegroundColor Green; return }
+
+    # 3) Tabelle parsen und formatieren
+    $rows = @()
+    foreach ($line in $data) {
+        $cols = $line.Trim() -split '\s+',5
+        if ($cols.Count -ge 4) {
+            $rows += [PSCustomObject]@{
+                Name       = $cols[0]
+                ID         = $cols[1]
+                Version    = $cols[2]
+                Available  = $cols[3]
+                Source     = if ($cols.Count -ge 5) { $cols[4] } else { '' }
+            }
+        }
+    }
+
+    # Spaltenbreiten bestimmen
+    $widths = @{
+        Name      = ($rows.Name | Measure-Object -Property Length -Maximum).Maximum
+        ID        = ($rows.ID   | Measure-Object -Property Length -Maximum).Maximum
+        Version   = ($rows.Version | Measure-Object -Property Length -Maximum).Maximum
+        Available = ($rows.Available | Measure-Object -Property Length -Maximum).Maximum
+        Source    = ($rows.Source | Measure-Object -Property Length -Maximum).Maximum
+    }
+
+    # Header ausgeben
+    Write-Host "`n[i] Folgende Pakete haben Updates:" -ForegroundColor Yellow
+    $header = "  {0,-$($widths.Name)}  {1,-$($widths.ID)}  {2,-$($widths.Version)}  {3,-$($widths.Available)}  {4,-$($widths.Source)}" -f 'Nr', 'Name', 'Version', 'Verfügbar', 'Quelle'
+    Write-Host $header -ForegroundColor Cyan
+    Write-Host ('-' * $header.Length) -ForegroundColor Cyan
+
+    # Zeilen ausgeben
+    for ($i=0; $i -lt $rows.Count; $i++) {
+        $nr = $i+1
+        $row = $rows[$i]
+        $line = "{0,2} {1,-$($widths.Name)}  {2,-$($widths.ID)}  {3,-$($widths.Version)}  {4,-$($widths.Available)}  {5,-$($widths.Source)}" -f $nr, $row.Name, $row.ID, $row.Version, $row.Available, $row.Source
+        Write-Host $line
+    }
+    Write-Host "[0] Abbrechen" -ForegroundColor Yellow
+
+    # 4) Auswahl
+    $sel = Read-Host "Gib die Nummern ein (z.B. 1,3,5) oder 'A' für alle"
+    if ($sel -match '^[Aa]$') { $selection = 1..$rows.Count } 
+    elseif ($sel -match '^[0-9, ]+$') { $selection = ($sel -split '[, ]+' | Where-Object { $_ -match '^\d+$' } | ForEach-Object { [int]$_ }) }
+    else { Write-Host "[!] Ungültige Auswahl." -ForegroundColor Yellow; return }
+
+    # 5) Upgrade durchführen
+    Write-Host "`n[*] Führe ausgewählte Upgrades durch..." -ForegroundColor Cyan
+    foreach ($n in $selection) {
+        if ($n -ge 1 -and $n -le $rows.Count) {
+            $pkg = $rows[$n-1]
+            Write-Host "→ Aktualisiere $($pkg.Name) ($($pkg.ID)) auf $($pkg.Available)..." -ForegroundColor Cyan
+            try { winget upgrade --id $pkg.ID --accept-package-agreements --accept-source-agreements | Out-Null; Write-Host "[✔] $($pkg.Name) aktualisiert." -ForegroundColor Green }
+            catch { Write-Host "[✖] Fehler bei $($pkg.Name): $($_.Exception.Message)" -ForegroundColor Red }
+        }
+    }
+
+    Write-Host "`n[✔] Software-Upgrade abgeschlossen." -ForegroundColor Green
+    Start-Sleep -Seconds 2; Clear-Host
 }
 
-# Funktion zur Datenträger-Optimierung
 function Optimize-Storage {
     Clear-Host
     Write-Host "`n$asciiLogo" -ForegroundColor Magenta
     Write-Host "`n💾 Starte Datenträger-Optimierung..." -ForegroundColor Cyan
 
-    # Ermittlung des freien Speicherplatzes vor der Optimierung
-    $drive = Get-PSDrive C
-    $beforeStorage = [math]::Round($drive.Free / 1MB, 2)
-    Write-Host "[Vorher] Freier Speicherplatz: $beforeStorage MB" -ForegroundColor Red
+    # 1) Freien Speicherplatz vorab ermitteln
+    $drive     = Get-PSDrive C
+    $beforeMB  = [math]::Round($drive.Free / 1MB, 2)
+    Write-Host "[Vorher] Freier Speicherplatz: $beforeMB MB" -ForegroundColor Red
 
-    # Datenträgerbereinigung (ohne Löschen wichtiger Systemdateien)
+    # 2) Datenträgerbereinigung
     Write-Host "🧹 Führe Datenträgerbereinigung aus..." -ForegroundColor Yellow
     Start-Process -NoNewWindow -Wait -FilePath "cleanmgr.exe" -ArgumentList "/sagerun:1"
 
-    # Defragmentierung (nur für HDDs, SSDs werden optimiert)
-    Write-Host "🚀 Optimiere Laufwerk..." -ForegroundColor Yellow
-    Optimize-Volume -DriveLetter C
+    # 3) Temporäre Dateien löschen
+    Write-Host "🗑️ Lösche temporäre Dateien (%TEMP%)..." -ForegroundColor Yellow
+    $temp = [IO.Path]::GetTempPath()
+    Get-ChildItem $temp -Recurse -Force -ErrorAction SilentlyContinue |
+      Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host "✅ Temporäre Dateien weg." -ForegroundColor Green
 
-    # Ermittlung des freien Speicherplatzes nach der Optimierung
-    $drive = Get-PSDrive C
-    $afterStorage = [math]::Round($drive.Free / 1MB, 2)
-    Write-Host "[Nachher] Freier Speicherplatz: $afterStorage MB" -ForegroundColor Green
+    # 4) Prefetch leeren
+    Write-Host "🚀 Leere Prefetch-Ordner..." -ForegroundColor Yellow
+    Get-ChildItem "C:\Windows\Prefetch" -Filter *.pf -ErrorAction SilentlyContinue |
+      Remove-Item -Force -ErrorAction SilentlyContinue
+    Write-Host "✅ Prefetch geleert." -ForegroundColor Green
 
-    Write-Host "✅ Datenträger-Optimierung abgeschlossen!" -ForegroundColor Yellow
+    # 5) Windows Update Cache zurücksetzen
+    Write-Host "📦 Leere Windows Update Cache..." -ForegroundColor Yellow
+    Stop-Service wuauserv -Force -ErrorAction SilentlyContinue
+    Remove-Item "C:\Windows\SoftwareDistribution\Download\*" -Recurse -Force -ErrorAction SilentlyContinue
+    Start-Service wuauserv | Out-Null
+    Write-Host "✅ Update-Cache gelöscht." -ForegroundColor Green
+
+    # 6) Event-Logs löschen
+    Write-Host "📝 Leere Event-Logs..." -ForegroundColor Yellow
+    wevtutil el | ForEach-Object { wevtutil cl $_ } | Out-Null
+    Write-Host "✅ Event-Logs leer." -ForegroundColor Green
+
+    # 7) SSD Trim (ReTrim)
+    Write-Host "🔧 Führe SSD ReTrim aus..." -ForegroundColor Yellow
+    Optimize-Volume -DriveLetter C -ReTrim -Verbose | Out-Null
+    Write-Host "✅ SSD ReTrim ausgeführt." -ForegroundColor Green
+
+    # 8) Defragmentierung (für HDDs)
+    Write-Host "🛠️ Defragmentiere Volume C:..." -ForegroundColor Yellow
+    Optimize-Volume -DriveLetter C -Defrag -Verbose | Out-Null
+    Write-Host "✅ Defragmentierung abgeschlossen." -ForegroundColor Green
+
+    # 9) Freien Speicherplatz nachher ermitteln
+    $afterMB = [math]::Round((Get-PSDrive C).Free / 1MB, 2)
+    Write-Host "[Nachher] Freier Speicherplatz: $afterMB MB" -ForegroundColor Green
+
+    Write-Host "🚀 Datenträger-Optimierung abgeschlossen! Starte deinen PC neu für volle Wirkung." -ForegroundColor Yellow
     Start-Sleep 3
     Clear-Host
 }
+
 
 
 
@@ -351,197 +704,551 @@ try {
 
 }
 function Deinstall-Bloatware {
-	Clear-Host
-    # Hole alle installierten Apps
-    $apps = Get-AppxPackage
+    Clear-Host
+    Write-Host "`n💣 Starte Bloatware-Entfernung..." -ForegroundColor Cyan
 
-    # Liste von Apps, die als Bloatware betrachtet werden und entfernt werden können
+    # 1) Statische Liste erweiterter Bloatware-Apps
     $bloatwareApps = @(
-    "Microsoft.XboxApp",
-    "Microsoft.XboxGamingOverlay",
-    "Microsoft.ZuneMusic",
-    "Microsoft.ZuneVideo",
-    "Microsoft.MicrosoftSolitaireCollection",
-    "Microsoft.YourPhone",
-    "Microsoft.People",
-    "Microsoft.Microsoft3DViewer",
-    "Microsoft.MicrosoftNews",
-    "Microsoft.MicrosoftWeather",
-    "Microsoft.MicrosoftOfficeHub",
-    "Microsoft.GetHelp",
-    "Microsoft.GetStarted",
-    "Microsoft.MicrosoftStickyNotes",
-	"Microsoft.Bing",
-    "Microsoft.OneDrive", # Wenn du OneDrive nicht verwenden möchtest
-    "Microsoft.SkypeApp",
-	"Microsoft.OneDriveSync",
-    "Microsoft.Lync"  # Skype for Business hinzugefügt
-)
+        'Microsoft.XboxApp','Microsoft.ZuneMusic','Microsoft.ZuneVideo','Microsoft.MicrosoftSolitaireCollection',
+        'Microsoft.YourPhone','Microsoft.People','Microsoft.Microsoft3DViewer','Microsoft.MicrosoftNews',
+        'Microsoft.MicrosoftWeather','Microsoft.MicrosoftOfficeHub','Microsoft.GetHelp','Microsoft.GetStarted',
+        'Microsoft.MicrosoftStickyNotes','Microsoft.Bing','Microsoft.OneDrive','Microsoft.SkypeApp',
+        'Microsoft.OneDriveSync','Microsoft.Lync','Microsoft.SkypeForBusiness',
+        'Microsoft.3DBuilder','Microsoft.WindowsMaps','Microsoft.People','Microsoft.WindowsCamera',
+        'Microsoft.Microsoft3DViewer','Microsoft.MixedReality.Portal','Microsoft.Wallet','Microsoft.PPIProjection',
+        'Microsoft.WindowsFeedbackHub'
+    )
 
-
-    Write-Host "`n### Überprüfe installierte Apps... ###" -ForegroundColor Yellow
-    Start-Sleep -Seconds 3  # 3 Sekunden warten
-
-    # Schleife durch alle Apps
-    foreach ($app in $bloatwareApps) {
-        Write-Host "Überprüfe App: $app" -ForegroundColor Cyan
-        
-
-        # Überprüfe, ob die App in den installierten Apps vorhanden ist
-        $installedApp = $apps | Where-Object { $_.Name -eq $app }
-
-        if ($installedApp) {
-            Write-Host "Finde Bloatware: $app" -ForegroundColor Yellow
-            Start-Sleep -Seconds 1  # 1 Sekunde warten
-
-            try {
-                # Entferne die App
-                Write-Host "Entferne Bloatware: $app" -ForegroundColor Cyan
-                Start-Sleep -Seconds 1  # 1 Sekunde warten
-                Remove-AppxPackage -Package $installedApp.PackageFullName -ErrorAction Stop
-                Write-Host "✅ $app wurde entfernt!" -ForegroundColor Green
+    # 2) Aktive Benutzer-Apps entfernen
+    $removed=0; $skipped=0; $failed=0
+    Write-Host "🚫 Entferne AppxPackage für Current User..." -ForegroundColor Yellow
+    foreach ($appName in $bloatwareApps) {
+        $apps = Get-AppxPackage -Name $appName -ErrorAction SilentlyContinue
+        if ($apps) {
+            foreach ($a in $apps) {
+                Write-Host " - Entferne $($a.Name)..." -ForegroundColor Magenta
+                try {
+                    Remove-AppxPackage -Package $a.PackageFullName -ErrorAction Stop
+                    $removed++;
+                    Write-Host "   ✅ entfernt." -ForegroundColor Green
+                } catch {
+                    $failed++;
+                    Write-Warning "   ⚠️ konnte nicht entfernt werden: $($_.Exception.Message)"
+                }
             }
-            catch {
-                Write-Host "Fehler beim Entfernen der App: $app. Fehler: $_" -ForegroundColor Red
-            }
-        }
-        else {
-            Write-Host "❌ Die App '$app' ist bereits nicht mehr installiert." -ForegroundColor Red
+        } else {
+            $skipped++;
         }
     }
 
-    Write-Host "`n### Bloatware-Überprüfung abgeschlossen. ###" -ForegroundColor Yellow
-    Start-Sleep -Seconds 3  # 3 Sekunden warten, bevor das Skript beendet wird
-	Clear-Host
+# 3) Provisioned Packages für alle Nutzer löschen) Provisioned Packages für alle Nutzer löschen
+    Write-Host "🚫 Entferne Provisioned Packages (Systemweit)..." -ForegroundColor Yellow
+    Get-AppxProvisionedPackage -Online | Where-Object DisplayName -In $bloatwareApps | ForEach-Object {
+        $name = $_.DisplayName
+        Write-Host " - Provisioned entfernen: $name..." -ForegroundColor Magenta
+        try {
+            Remove-AppxProvisionedPackage -Online -PackageName $_.PackageName -ErrorAction Stop | Out-Null
+            Write-Host "   ✅ $name entfernt." -ForegroundColor Green
+        } catch {
+            Write-Warning "   ⚠️ $name konnte nicht entfernt werden: $($_.Exception.Message)"
+        }
+    }
+
+# 4) Deaktivieren von Consumer Experience Features
+    Write-Host "🔒 Deaktiviere Consumer Experience..." -ForegroundColor Yellow
+    # Stelle sicher, dass der Explorer-Policy-Pfad existiert
+    $regPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer'
+    if (-not (Test-Path $regPath)) {
+        New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows' -Name 'Explorer' -Force | Out-Null
+        Write-Host "   ✅ Registry-Pfad für Explorer erstellt." -ForegroundColor Green
+    }
+    try {
+        New-ItemProperty -Path $regPath -Name "DisableNewAppAlert" -PropertyType DWord -Value 1 -Force | Out-Null
+        New-ItemProperty -Path $regPath -Name "DisableWindowsConsumerFeatures" -PropertyType DWord -Value 1 -Force | Out-Null
+        Write-Host "   ✅ Consumer Features deaktiviert." -ForegroundColor Green
+    } catch {
+        Write-Warning "   ⚠️ Consumer Features konnten nicht vollständig deaktiviert werden: $($_.Exception.Message)"
+    }
+
+# 5) Entferne zugehörige Scheduled Tasks
+    Write-Host "🗓️ Entferne Windows Tips & Cortana Tasks..." -ForegroundColor Yellow
+    $tasks = @( 
+        '\Microsoft\Windows\Shell\FamilySafetyUpdateTask',
+        '\Microsoft\Windows\CloudExperienceHost\CreateObjectTask',
+        '\Microsoft\Windows\CloudExperienceHost\BingSearchUpdate'
+    )
+    foreach ($t in $tasks) {
+        schtasks /Change /TN $t /Disable 2>$null
+    }
+    Write-Host "✅ Geplante Consumer Tasks deaktiviert." -ForegroundColor Green
+
+    Write-Host "✅ Bloatware-Entfernung abgeschlossen!" -ForegroundColor Cyan
+    Start-Sleep 3
+    Clear-Host
 }
+
+
+
+
+
+
+
+
 
 function Apply-CPUOptimizations {
     Clear-Host
-Write-Host "`n⚡ CPU-Optimierung wird gestartet..." -ForegroundColor Cyan
+    Write-Host "`n⚡ CPU-Optimierung wird gestartet..." -ForegroundColor Cyan
 
-# Höchstleistungs-Energiemodus aktivieren
-Write-Host "🔋 Setze Energieoptionen auf Höchstleistung..."
-powercfg -setactive SCHEME_MIN > $null
-Write-Host "✅ Energieoptionen auf Höchstleistung gesetzt." -ForegroundColor Green
+    # 1) Höchstleistungs-Energiemodus aktivieren
+    Write-Host "🔋 Setze Energieoptionen auf Höchstleistung..."
+    powercfg -setactive SCHEME_MIN > $null
+    Write-Host "✅ Energieoptionen auf Höchstleistung gesetzt." -ForegroundColor Green
 
-# CPU-Interrupt-Steuerung optimieren
-Write-Host "🔧 Optimiere CPU-Interrupt-Steuerung..."
-reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Kernel" /v "InterruptSteering" /t REG_DWORD /d 1 /f > $null
-Write-Host "✅ Interrupt-Steuerung optimiert." -ForegroundColor Green
+    # 2) Prozessorleistung auf 100%
+    Write-Host "📈 Setze minimale/maximale Prozessorleistung auf 100%..."
+    powercfg /setacvalueindex SCHEME_MIN SUB_PROCESSOR PROCTHROTTLEMIN 100 | Out-Null
+    powercfg /setacvalueindex SCHEME_MIN SUB_PROCESSOR PROCTHROTTLEMAX 100 | Out-Null
+    Write-Host "✅ CPU-Leistungsgrenzen angepasst." -ForegroundColor Green
 
-# CPU-Parkmodus deaktivieren
-Write-Host "🚀 Deaktiviere CPU-Parking..."
-reg add "HKLM\SYSTEM\CurrentControlSet\Control\Power\PowerSettings\54533251-82be-4824-96c1-47b60b740d00\0cc5b647-c1df-4637-891a-dec35c318583" /v "Attributes" /t REG_DWORD /d 0 /f > $null
-Write-Host "✅ CPU-Parkmodus deaktiviert." -ForegroundColor Green
+    # 3) PCIe Energiesparmodus (ASPM) deaktivieren
+    Write-Host "🔌 Deaktiviere PCIe Energiesparmodus (ASPM)..."
+    powercfg /setacvalueindex SCHEME_MIN SUB_PCIEXPRESS ASPM 0 | Out-Null
+    Write-Host "✅ PCIe ASPM deaktiviert." -ForegroundColor Green
 
-# Dynamische Frequenzskalierung abschalten
-Write-Host "⚙️ Deaktiviere CPU-Drosselung..."
-reg add "HKLM\SYSTEM\CurrentControlSet\Control\Power\PowerThrottling" /v "PowerThrottlingOff" /t REG_DWORD /d 1 /f > $null
-Write-Host "✅ CPU-Frequenz bleibt stabil." -ForegroundColor Green
+    # 4) CPU-Interrupt-Steuerung optimieren
+    Write-Host "🔧 Optimiere CPU-Interrupt-Steuerung..."
+    reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Kernel" /v "InterruptSteering" /t REG_DWORD /d 1 /f > $null
+    Write-Host "✅ Interrupt-Steuerung optimiert." -ForegroundColor Green
 
-# Prefetch & Superfetch deaktivieren
-Write-Host "🛑 Deaktiviere Prefetch und Superfetch..."
-reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters" /v "EnablePrefetcher" /t REG_DWORD /d 0 /f > $null
-reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters" /v "EnableSuperfetch" /t REG_DWORD /d 0 /f > $null
-Write-Host "✅ Prefetch und Superfetch deaktiviert." -ForegroundColor Green
+    # 5) CPU-Parkmodus deaktivieren
+    Write-Host "🚀 Deaktiviere CPU-Parking..."
+    reg add "HKLM\SYSTEM\CurrentControlSet\Control\Power\PowerSettings\54533251-82be-4824-96c1-47b60b740d00\0cc5b647-c1df-4637-891a-dec35c318583" /v "Attributes" /t REG_DWORD /d 0 /f > $null
+    Write-Host "✅ CPU-Parkmodus deaktiviert." -ForegroundColor Green
 
-# Mikrosekundengenaue Timer aktivieren
-Write-Host "🕒 Optimiere CPU-Timer-Auflösung..."
-reg add "HKLM\SYSTEM\CurrentControlSet\Control\TimeZoneInformation" /v "RealTimeIsUniversal" /t REG_DWORD /d 1 /f > $null
-Write-Host "✅ Hochpräziser CPU-Timer aktiviert." -ForegroundColor Green
+    # 6) Dynamische Frequenzskalierung abschalten
+    Write-Host "⚙️ Deaktiviere CPU-Drosselung..."
+    reg add "HKLM\SYSTEM\CurrentControlSet\Control\Power\PowerThrottling" /v "PowerThrottlingOff" /t REG_DWORD /d 1 /f > $null
+    Write-Host "✅ CPU-Frequenz bleibt stabil." -ForegroundColor Green
 
-# Hyper-Threading testen (nur für Intel)
-if ($env:PROCESSOR_IDENTIFIER -match "Intel") {
-    Write-Host "🔍 Erkenne Intel Hyper-Threading..."
-    reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Kernel" /v "DisableHyperthreading" /t REG_DWORD /d 0 /f > $null
-    Write-Host "✅ Hyper-Threading ist aktiviert (falls unterstützt)." -ForegroundColor Green
-}
+    # 7) Prozessor Scheduling für Programme
+    Write-Host "🗂️ Setze Prozessor-Scheduling auf Programme..."
+    reg add "HKLM\SYSTEM\CurrentControlSet\Control\PriorityControl" /v "Win32PrioritySeparation" /t REG_DWORD /d 26 /f > $null
+    Write-Host "✅ Scheduling auf Programme angepasst." -ForegroundColor Green
 
+    # 8) Prefetch & Superfetch deaktivieren
+    Write-Host "🛑 Deaktiviere Prefetch und Superfetch..."
+    reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters" /v "EnablePrefetcher" /t REG_DWORD /d 0 /f > $null
+    reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters" /v "EnableSuperfetch" /t REG_DWORD /d 0 /f > $null
+    Write-Host "✅ Prefetch und Superfetch deaktiviert." -ForegroundColor Green
 
+    # 9) Mikrosekundengenaue Timer aktivieren
+    Write-Host "🕒 Optimiere CPU-Timer-Auflösung..."
+    reg add "HKLM\SYSTEM\CurrentControlSet\Control\TimeZoneInformation" /v "RealTimeIsUniversal" /t REG_DWORD /d 1 /f > $null
+    Write-Host "✅ Hochpräziser CPU-Timer aktiviert." -ForegroundColor Green
 
+    # 10) Hyper-Threading aktivieren (Intel)
+    if ($env:PROCESSOR_IDENTIFIER -match "Intel") {
+        Write-Host "🔍 Erkenne Intel Hyper-Threading..."
+        reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Kernel" /v "DisableHyperthreading" /t REG_DWORD /d 0 /f > $null
+        Write-Host "✅ Hyper-Threading ist aktiviert (falls unterstützt)." -ForegroundColor Green
+    }
 
-   
+    # 11) Performance Boost Mode konfigurieren
+    Write-Host "💥 Aktiviere Performance Boost Mode..."
+    reg add "HKLM\SYSTEM\CurrentControlSet\Control\Power\PowerSettings\54533251-82be-4824-96c1-47b60b740d00\bc5038f7-23e0-4960-96da-33abaf5935ec" /v "Attributes" /t REG_DWORD /d 0 /f > $null
+    powercfg /setacvalueindex SCHEME_MIN SUB_PROCESSOR BC5038F7-23E0-4960-96DA-33ABAF5935EC 2 | Out-Null
+    Write-Host "✅ Performance Boost Mode gesetzt." -ForegroundColor Green
+
+    # 12) Hochpräzise Timer im Bootloader
+    Write-Host "⏱️ Aktiviere UsePlatformClock..."
+    bcdedit /set useplatformclock true | Out-Null
+    Write-Host "✅ Hochpräzise Timer im Bootloader aktiviert." -ForegroundColor Green
+
+    # 13) Dynamischen Tick deaktivieren
+    Write-Host "⏳ Deaktiviere dynamischen Tick..."
+    bcdedit /set disabledynamictick yes | Out-Null
+    Write-Host "✅ Dynamischer Tick deaktiviert." -ForegroundColor Green
 
     Write-Host "🚀 CPU-Optimierung abgeschlossen! Starte deinen PC neu für maximale Wirkung." -ForegroundColor Yellow
-	Start-Sleep 3
+    Start-Sleep 3
     Clear-Host
 }
+
+
 
 
 function Deactivate-Telemetry {
     Clear-Host
-    # 1️⃣ Relevante Telemetrie-Dienste stoppen und deaktivieren
-$telemetryServices = @(
-    "DiagTrack",          # Connected User Experience and Telemetry
-    "dmwappushservice",   # Device Management Wireless Application Protocol
-    "WMPNetworkSvc"       # Windows Media Player Network
-)
+    Write-Host "`n🔒 Deaktiviere Telemetrie & Diagnosedaten..." -ForegroundColor Cyan
 
-foreach ($service in $telemetryServices) {
-    Stop-Service -Name $service -Force -ErrorAction SilentlyContinue
-    Set-Service -Name $service -StartupType Disabled
-    Write-Host "Dienst deaktiviert: $service"
-}
-
-# 2️⃣ Aufgaben im Task Scheduler deaktivieren
-$telemetryTasks = @(
-    "\Microsoft\Windows\Application Experience\Microsoft Compatibility Appraiser",
-    "\Microsoft\Windows\Application Experience\ProgramDataUpdater",
-    "\Microsoft\Windows\Autochk\Proxy",
-    "\Microsoft\Windows\Customer Experience Improvement Program\Consolidator",
-    "\Microsoft\Windows\Customer Experience Improvement Program\UsbCeip",
-    "\Microsoft\Windows\DiskDiagnostic\Microsoft-Windows-DiskDiagnosticDataCollector"
-)
-
-foreach ($task in $telemetryTasks) {
-    schtasks /Change /TN $task /Disable
-    Write-Host "Aufgabe deaktiviert: $task"
-}
-
-# 3️⃣ Registry-Einträge zur Telemetrie-Anpassung
-$registryPaths = @{
-    "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection" = "AllowTelemetry";
-    "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\DataCollection" = "AllowTelemetry";
-    "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer" = "AllowTelemetry";
-    "HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppCompat" = "AITEnable";
-}
-
-foreach ($path in $registryPaths.Keys) {
-    if (!(Test-Path $path)) {
-        New-Item -Path $path -Force | Out-Null
+    # 1️⃣ Relevante Telemetrie-Dienste stoppen & deaktivieren
+    $services = @(
+        "DiagTrack",
+        "dmwappushservice",
+        "WMPNetworkSvc",
+        "RetailDemo",
+        "diagnosticshub.standardcollector.service"
+    )
+    foreach ($svc in $services) {
+        if (Get-Service $svc -ErrorAction SilentlyContinue) {
+            Stop-Service $svc -Force -ErrorAction SilentlyContinue
+            Set-Service  $svc -StartupType Disabled -ErrorAction SilentlyContinue
+            Write-Host "✓ Dienst deaktiviert: $svc" -ForegroundColor Green
+        }
     }
-    Set-ItemProperty -Path $path -Name $registryPaths[$path] -Value 0
-    Write-Host "Registry-Wert gesetzt: $path -> $($registryPaths[$path])"
-}
 
-# 4️⃣ Windows Defender Cloud-Dienste deaktivieren (optional)
-Set-MpPreference -SubmitSamplesConsent NeverSend -MAPSReporting 0
+    # 2️⃣ Geplante Telemetrie-Tasks abschalten
+    $tasks = @(
+        "\Microsoft\Windows\Application Experience\Microsoft Compatibility Appraiser",
+        "\Microsoft\Windows\Application Experience\ProgramDataUpdater",
+        "\Microsoft\Windows\Autochk\Proxy",
+        "\Microsoft\Windows\Customer Experience Improvement Program\Consolidator",
+        "\Microsoft\Windows\Customer Experience Improvement Program\UsbCeip",
+        "\Microsoft\Windows\DiskDiagnostic\Microsoft-Windows-DiskDiagnosticDataCollector"
+    )
+    foreach ($t in $tasks) {
+        schtasks /Change /TN $t /Disable 2>$null
+        Write-Host "✓ Task deaktiviert: $t" -ForegroundColor Green
+    }
 
-Write-Host "Microsoft Telemetrie wurde deaktiviert!"
+    # 3️⃣ Registry-Einträge zur Telemetrie-Anpassung
+    $registryPaths = @{
+        "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection"               = "AllowTelemetry";
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\DataCollection" = "AllowTelemetry";
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer"       = "AllowTelemetry";
+        "HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppCompat"                     = "AITEnable";
+    }
+    foreach ($path in $registryPaths.Keys) {
+        if (-not (Test-Path $path)) {
+            New-Item -Path $path -Force | Out-Null
+        }
+        Set-ItemProperty -Path $path -Name $registryPaths[$path] -Value 0 -Force
+        Write-Host "✓ Registry gesetzt: $path -> $($registryPaths[$path])=0" -ForegroundColor Green
+    }
 
-	Start-Sleep 3
+    # 4️⃣ Defender-Cloud-Reporting abschalten
+    Set-MpPreference -SubmitSamplesConsent NeverSend -MAPSReporting 0
+    Write-Host "✓ Defender Cloud Reporting deaktiviert" -ForegroundColor Green
+
+    Write-Host "`n🎉 Telemetrie komplett abgeschaltet." -ForegroundColor Cyan
+    Start-Sleep 3
     Clear-Host
 }
 
 
-# Hauptmenü mit der einmaligen Frage nach dem Wiederherstellungspunkt
-# Netzwerk-Untermenü
+
+
+
+function Set-PowerPlanMenu {
+    Clear-Host
+    Write-Host "`n🔋 Verfügbare Energiepläne:" -ForegroundColor Cyan
+
+    # Alle Pläne per WMI auslesen
+    $allPlans = Get-CimInstance -Namespace root\cimv2\power Win32_PowerPlan |
+                ForEach-Object {
+                    [PSCustomObject]@{
+                        Name     = $_.ElementName
+                        Guid     = ($_.InstanceID -split '\\')[-1]
+                        IsActive = $_.IsActive
+                    }
+                }
+
+    # Anzeige mit Kennzeichnung des aktiven Plans
+    for ($i = 0; $i -lt $allPlans.Count; $i++) {
+        $plan = $allPlans[$i]
+        if ($plan.IsActive) {
+		$marker = '*'
+		} else {
+		$marker = ' '
+		}
+
+        Write-Host "[$($i+1)] $($plan.Name) $marker" -ForegroundColor Green
+    }
+    Write-Host "[0] Abbrechen" -ForegroundColor Yellow
+
+    $choice = Read-Host "Wähle einen Plan (Nummer)"
+    if ($choice -match '^\d+$' -and $choice -gt 0 -and $choice -le $allPlans.Count) {
+        $sel = $allPlans[$choice - 1]
+        powercfg -setactive $sel.Guid
+        Write-Host "✅ Energieplan gesetzt auf: $($sel.Name)" -ForegroundColor Cyan
+    } else {
+        Write-Host "ℹ️ Abbruch oder ungültige Auswahl." -ForegroundColor Yellow
+    }
+
+    Start-Sleep 3
+    Clear-Host
+}
+
+
+function New-HighFPSPowerPlan {
+    [CmdletBinding()]
+    param ()
+
+    Write-Host "`n⚡ Erstelle ultimativen Performance Power Plan auf Basis 'Energiesparmodus'..." -ForegroundColor Cyan
+
+    # 1) Basis-Plan ermitteln (englisch "Power Saver" oder deutsch "Energiesparmodus")
+    Write-Host "🔍 Suche Power Saver-/Energiesparmodus-Plan..." -ForegroundColor Yellow
+    $schemeLines = powercfg /List
+    $baseLine   = $schemeLines | Where-Object { $_ -match 'Power Saver|Energiesparmodus' }
+    if ($baseLine -match '([0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12})') {
+        $baseGuid = $Matches[1]
+        Write-Host "✅ Basis-Plan GUID: $baseGuid" -ForegroundColor Green
+    } else {
+        Write-Error "Basis-Plan 'Power Saver' bzw. 'Energiesparmodus' nicht gefunden. Abbruch."
+        return
+    }
+
+    # 2) Klon erstellen und GUID extrahieren
+    Write-Host "📝 Klone den Basis-Plan..." -ForegroundColor Yellow
+    $dupOutput = powercfg /duplicatescheme $baseGuid
+    $guidMatch = $dupOutput |
+        Select-String -Pattern '[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}' |
+        Select-Object -First 1
+
+    if ($guidMatch) {
+        $newGuid = $guidMatch.Matches[0].Value
+        Write-Host "✅ Neuer Plan GUID: $newGuid" -ForegroundColor Green
+    } else {
+        Write-Error "Fehler beim Klonen des Plans. Abbruch."
+        return
+    }
+
+    # 3) Neuen Plan umbenennen inkl. Beschreibung
+    $newName = "PCTest Powerplan"
+    $newDesc = "Maximale Leistungseinstellungen für FPS-intensive und Power-User-Anwendungen"
+    Write-Host "✏️ Setze Name und Beschreibung auf '$newName' / '$newDesc'..." -ForegroundColor Yellow
+    powercfg /changename $newGuid "$newName" "$newDesc"
+
+    # Hilfsfunktion für AC/DC Einstellungen
+    function Set-Index {
+        param($sub, $setting, $value)
+        Write-Host "   - Setze $setting auf $value..." -ForegroundColor Cyan
+        powercfg /setacvalueindex $newGuid $sub $setting $value | Out-Null
+        powercfg /setdcvalueindex $newGuid $sub $setting $value | Out-Null
+    }
+
+    # 4) CPU Throttling auf 100%
+    Write-Host "🔧 Konfiguriere CPU Throttling..." -ForegroundColor Yellow
+    $procSub = '54533251-82be-4824-96c1-47b60b740d00'
+    Set-Index $procSub '893dee8e-2bef-41e0-89c6-b55d0929964c' 100
+    Set-Index $procSub 'bc5038f7-23e0-4960-96da-33abaf5935ec' 100
+
+    # 5) CPU C-States deaktivieren
+    Write-Host "🔒 Deaktiviere CPU C-States..." -ForegroundColor Yellow
+    $cStateSub = '238c9fa8-0aad-41ed-83f4-97be242c8f20'
+    Set-Index $cStateSub '3b04d4fd-1cc7-4f23-8287-3b3660f74a66' 0
+
+    # 6) PCIe ASPM deaktivieren
+    Write-Host "✂️ Deaktiviere PCIe ASPM..." -ForegroundColor Yellow
+    $pcieSub = '501a4d13-42af-4429-9fd1-a8218c268e20'
+    Set-Index $pcieSub 'ee12f906-d277-404b-b6da-e5fa1a576df5' 0
+
+    # 7) System Cooling Policy = Active
+    Write-Host "🌡️ Setze System Cooling Policy auf Active..." -ForegroundColor Yellow
+    Set-Index $cStateSub '94d3a615-a899-4ac5-ae2b-e4d8f634367f' 0
+
+    # 8) Performance Boost Mode = Aggressive
+    Write-Host "🚀 Aktiviere Performance Boost Mode..." -ForegroundColor Yellow
+    $boostSub = '45bcc044-d885-43e2-8605-ee0ec6e96b59'
+    Set-Index $boostSub 'be337238-0d82-4146-a960-4f3749d470c7' 2
+
+    # 9) Network Throttling deaktivieren
+    Write-Host "🌐 Deaktiviere Network Throttling..." -ForegroundColor Yellow
+    $netSub = 'b5d880f7-4841-4872-8aad-7e4325b58f78'
+    Set-Index $netSub 'e2761301-3825-4dcd-b20c-31f197c53bb2' 0
+
+    # 10) System Responsiveness auf 100
+    Write-Host "⚡ Setze System Responsiveness auf 100..." -ForegroundColor Yellow
+    $respSub = '9d7815a6-7ee4-497e-8888-515a05f02364'
+    Set-Index $respSub '5c5bb349-ad29-4ee2-ade2-1e1de703e917' 100
+
+    # 11) Plan aktivieren
+    Write-Host "🔔 Aktiviere neuen Power Plan..." -ForegroundColor Yellow
+    powercfg /setactive $newGuid
+
+    Start-Sleep 10
+    Clear-Host
+}
+
+function Update-Windows {
+    Clear-Host
+    Write-Host "`n🔄 Windows Update-Check & Installation" -ForegroundColor Cyan
+    Write-Host "======================================" -ForegroundColor Yellow
+
+    # 1️⃣ Modul laden / installieren
+    if (-not (Get-Module PSWindowsUpdate -ListAvailable)) {
+        Write-Host "[1/4] PSWindowsUpdate Modul fehlt – installiere…" -ForegroundColor Yellow
+        try {
+            Install-PackageProvider -Name NuGet -Force -Scope CurrentUser | Out-Null
+            Install-Module PSWindowsUpdate -Force -Scope CurrentUser -AllowClobber | Out-Null
+            Write-Host "    ✓ Modul installiert" -ForegroundColor Green
+        } catch {
+            Write-Host "    ✖ Fehler beim Modul-Install: $($_.Exception.Message)" -ForegroundColor Red
+            return
+        }
+    } else {
+        Write-Host "[1/4] PSWindowsUpdate Modul geladen" -ForegroundColor Green
+    }
+    Import-Module PSWindowsUpdate
+
+    # 2️⃣ Suche nach Updates
+    Write-Host "[2/4] Suche nach verfügbaren Updates…" -ForegroundColor Yellow
+    $updates = Get-WindowsUpdate -AcceptAll -IgnoreUserInput | Tee-Object -Variable found
+    if (-not $updates) {
+        Write-Host "    ✓ Keine Updates gefunden." -ForegroundColor Green
+        Start-Sleep 2
+        return
+    }
+    Write-Host "    ⚠️ Updates gefunden: $($updates.Count)" -ForegroundColor Magenta
+
+    # 3️⃣ Installiere Updates mit Fortschritt
+    Write-Host "[3/4] Installation läuft… Bitte warten." -ForegroundColor Yellow
+    $total = $updates.Count
+    for ($i=0; $i -lt $total; $i++) {
+        $u = $updates[$i]
+        $percent = [int](($i / $total) * 100)
+        Write-Progress -Activity "Windows Update" -Status "Installiere: $($u.Title)" -PercentComplete $percent
+        Install-WindowsUpdate -KBArticleID $u.KB -AcceptAll -AutoReboot -IgnoreReboot -Verbose:$false | Out-Null
+    }
+    Write-Progress -Activity "Windows Update" -Completed
+
+    # 4️⃣ Abschluss & Neustart prüfen
+    Write-Host "[4/4] Alle Updates installiert." -ForegroundColor Green
+    if (Test-Path HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired) {
+        Write-Host "➡️  Neustart erforderlich… starte in 10 Sekunden" -ForegroundColor Yellow
+        Start-Sleep -Seconds 10
+        Restart-Computer -Force
+    } else {
+        Write-Host "➡️  Kein Neustart nötig." -ForegroundColor Cyan
+    }
+    Start-Sleep 3
+    Clear-Host
+}
+
+
+function Run-Benchmark {
+    Clear-Host
+    Write-Host "`n🏁 Starte System-Benchmark…" -ForegroundColor Cyan
+    Write-Host "----------------------------------" -ForegroundColor Yellow
+
+    # 1️⃣ CPU-Test
+    Write-Host "`n[CPU] Berechne 1.000.000 Quadratwurzeln…" -ForegroundColor Cyan
+    $cpuTime = Measure-Command {
+        1..1000000 | ForEach-Object { [math]::Sqrt($_) } | Out-Null
+    }
+    Write-Host ("→ CPU: {0:N2} s" -f $cpuTime.TotalSeconds) -ForegroundColor Green
+
+    # 2️⃣ Intensiver Festplatten‐Test (100 MB + Random I/O)
+    Write-Host "`n[Disk] Sequenzieller & zufälliger I/O Test (100 MB) …" -ForegroundColor Cyan
+
+    $file      = Join-Path $env:TEMP 'bench_disk.tmp'
+    $sizeMB    = 100
+    $mb        = 1024 * 1024
+    $totalSize = $sizeMB * $mb
+    $chunkSize = 1 * $mb
+    $chunks    = $sizeMB
+    $rand      = New-Object Random
+
+    # Sequenzieller Write-Buffer
+    $seqBuffer = New-Object byte[] $chunkSize
+    $rand.NextBytes($seqBuffer)
+
+    # Seq Write
+    $seqWrite = Measure-Command {
+        $fs = [IO.File]::Open($file, 'Create', 'Write')
+        for ($i = 0; $i -lt $chunks; $i++) {
+            $fs.Write($seqBuffer, 0, $chunkSize)
+        }
+        $fs.Close()
+    }
+    Write-Host ("   → Seq Write: {0:N2} MB/s" -f ($sizeMB / $seqWrite.TotalSeconds)) -ForegroundColor Green
+
+    # Random-Write (20 I/Os à 4 MB)
+    $randChunk   = 4 * $mb
+    $randWrites  = 20
+    $randBuffer  = New-Object byte[] $randChunk    # puffert jetzt 4 MB!
+    $rand.NextBytes($randBuffer)
+
+    $randWrite = Measure-Command {
+        $fs = [IO.File]::Open($file, 'Open', 'ReadWrite')
+        for ($i = 0; $i -lt $randWrites; $i++) {
+            $pos = $rand.Next(0, $totalSize - $randChunk)
+            $fs.Position = $pos
+            $fs.Write($randBuffer, 0, $randChunk)
+        }
+        $fs.Close()
+    }
+    Write-Host ("   → Rand Write: {0:N2} IOPS" -f ($randWrites / $randWrite.TotalSeconds)) -ForegroundColor Green
+
+    # Sequenzieller Read
+    $seqRead = Measure-Command {
+        $fs     = [IO.File]::OpenRead($file)
+        $readBuf = New-Object byte[] $chunkSize
+        while ($fs.Read($readBuf, 0, $chunkSize) -gt 0) { }
+        $fs.Close()
+    }
+    Write-Host ("   → Seq Read: {0:N2} MB/s" -f ($sizeMB / $seqRead.TotalSeconds)) -ForegroundColor Green
+
+    # Random-Read (20 I/Os à 4 MB)
+    $randRead = Measure-Command {
+        $fs     = [IO.File]::OpenRead($file)
+        $readBuf = New-Object byte[] $randChunk       # hier ebenfalls 4 MB-Puffer
+        for ($i = 0; $i -lt $randWrites; $i++) {
+            $pos = $rand.Next(0, $totalSize - $randChunk)
+            $fs.Position = $pos
+            $fs.Read($readBuf, 0, $randChunk) | Out-Null
+        }
+        $fs.Close()
+    }
+    Write-Host ("   → Rand Read: {0:N2} IOPS" -f ($randWrites / $randRead.TotalSeconds)) -ForegroundColor Green
+
+    Remove-Item $file -Force
+
+    # 3️⃣ RAM-Test (500 MB)
+    Write-Host "`n[RAM] Allociere & fülle 500 MB Array…" -ForegroundColor Cyan
+    $mb      = 1024 * 1024
+    $memSize = 500 * $mb
+    $memTime = Measure-Command {
+        $arr = New-Object byte[] $memSize
+        for ($i = 0; $i -lt $arr.Length; $i += 4096) {
+            $arr[$i] = 1
+        }
+    }
+    Write-Host ("→ RAM:   {0:N2} s" -f $memTime.TotalSeconds) -ForegroundColor Green
+
+    Write-Host "`n🏁 Benchmark abgeschlossen!" -ForegroundColor Yellow
+    Start-Sleep 7
+    Clear-Host
+}
+
+
+
+
+
+
+
+
+
+
+# Verbesserte Menü-Funktionen
+
 function Show-NetworkMenu {
     while ($true) {
         Clear-Host
         Write-Host "`n$asciiLogo" -ForegroundColor Magenta
-        Write-Host "`n=================================" -ForegroundColor Yellow
-        Write-Host "`n🌐 Netzwerk-Menü:" -ForegroundColor Cyan
-        Write-Host "1. Netzwerk optimieren" -ForegroundColor Cyan
-        Write-Host "2. Speedtest ausführen" -ForegroundColor Cyan
-        Write-Host "3. Zurück zum Hauptmenü" -ForegroundColor Cyan
-        $networkSelection = Read-Host "Geben Sie Ihre Wahl ein"
-
-        switch ($networkSelection) {
-            "1" { Optimize-Network }
-            "2" { Run-Speedtest }
-            "3" { return }  # Verwendet break, um zur vorherigen Schleife (Hauptmenü) zurückzukehren
-            default { Write-Host "Ungültige Auswahl, bitte wählen Sie erneut." -ForegroundColor Red }
+        Write-Host "╔═════════════════════════════╗" -ForegroundColor Yellow
+        Write-Host "║        🌐 Netzwerk-Menü       ║" -ForegroundColor Cyan
+        Write-Host "╠═════════════════════════════╣" -ForegroundColor Yellow
+        Write-Host "║ 1) Netzwerk optimieren      ║" -ForegroundColor Green
+        Write-Host "║ 2) Speedtest ausführen       ║" -ForegroundColor Green
+        Write-Host "║ 3) Zurück zum Hauptmenü      ║" -ForegroundColor Green
+        Write-Host "╚═════════════════════════════╝" -ForegroundColor Yellow
+        $choice = Read-Host "Auswahl (1-3)"
+        switch ($choice) {
+            '1' { Optimize-Network }
+            '2' { Run-Speedtest }
+            '3' { return }
+            default { Write-Host "Ungültige Auswahl!" -ForegroundColor Red; Start-Sleep 1 }
         }
     }
 }
@@ -550,107 +1257,136 @@ function Show-PerformanceMenu {
     while ($true) {
         Clear-Host
         Write-Host "`n$asciiLogo" -ForegroundColor Magenta
-        Write-Host "`n=================================" -ForegroundColor Yellow
-        Write-Host "`n🌐 Performance-Menü:" -ForegroundColor Cyan
-        Write-Host "1. FPS Optimierung" -ForegroundColor Cyan
-        Write-Host "2. CPU Optimierung" -ForegroundColor Cyan
-		Write-Host "3. RAM Optimierung" -ForegroundColor Cyan
-		Write-Host "4. Speicher Optimierung" -ForegroundColor Cyan
-        Write-Host "5. Zurück zum Hauptmenü" -ForegroundColor Cyan
-        $networkSelection = Read-Host "Geben Sie Ihre Wahl ein"
+        Write-Host "╔═════════════════════════════╗" -ForegroundColor Yellow
+        Write-Host "║      ⚙️ Performance-Menü      ║" -ForegroundColor Cyan
+        Write-Host "╠═════════════════════════════╣" -ForegroundColor Yellow
+        Write-Host "║ 1) FPS Optimierung          ║" -ForegroundColor Green
+        Write-Host "║ 2) CPU Optimierung          ║" -ForegroundColor Green
+        Write-Host "║ 3) RAM Optimierung          ║" -ForegroundColor Green
+        Write-Host "║ 4) Speicher Optimierung     ║" -ForegroundColor Green
+        Write-Host "║ 5) Power-Plan auswählen     ║" -ForegroundColor Green
+		Write-Host "║ 6) Benchmark durchführen     ║" -ForegroundColor Green
+        Write-Host "║ 7) Zurück zum Hauptmenü     ║" -ForegroundColor Green
+        Write-Host "╚═════════════════════════════╝" -ForegroundColor Yellow
+        $choice = Read-Host "Auswahl (1-7)"
+        switch ($choice) {
+            '1' { Apply-FPSOptimizations }
+            '2' { Apply-CPUOptimizations }
+            '3' { Optimize-RAM }
+            '4' { Optimize-Storage }
+            '5' { New-HighFPSPowerPlan }
+			'6' { Run-Benchmark }
 
-        switch ($networkSelection) {
-            "1" { Apply-FPSOptimizations }
-            "2" { Apply-CPUOptimizations }
-			"3" { Optimize-RAM }
-			"4" { Optimize-Storage }
-            "5" { return }  # Verwendet break, um zur vorherigen Schleife (Hauptmenü) zurückzukehren
-            default { Write-Host "Ungültige Auswahl, bitte wählen Sie erneut." -ForegroundColor Red }
+            '7' { return }
+            default { Write-Host "Ungültige Auswahl!" -ForegroundColor Red; Start-Sleep 1 }
         }
     }
 }
 
-
-
-
-# Windows-Untermenü
-function Show-WindowsMenu {  # Achte darauf, dass der Funktionsname exakt übereinstimmt
+function Show-WindowsMenu {
     while ($true) {
         Clear-Host
         Write-Host "`n$asciiLogo" -ForegroundColor Magenta
-        Write-Host "`n=================================" -ForegroundColor Yellow
-        Write-Host "`n🌐 Windows-Menü:" -ForegroundColor Cyan
-        Write-Host "1. Bloatware deinstallieren" -ForegroundColor Cyan
-        Write-Host "2. Telemetry deaktivieren" -ForegroundColor Cyan
-        Write-Host "3. Zurück zum Hauptmenü" -ForegroundColor Cyan
-        $networkSelection = Read-Host "Geben Sie Ihre Wahl ein"
 
-        switch ($networkSelection) {
-            "1" { Deinstall-Bloatware }
-            "2" { Deactivate-Telemetry }
-            "3" { return }  # Verwendet break, um zur vorherigen Schleife (Hauptmenü) zurückzukehren
-            default { Write-Host "Ungültige Auswahl, bitte wählen Sie erneut." -ForegroundColor Red }
+        # Menü-Box für Windows-Tools
+        $opts = @(
+            '1) Bloatware entfernen',
+            '2) Telemetrie deaktivieren',
+            '3) Windows Update',
+            '4) Zurück zum Hauptmenü'
+        )
+        $width  = ($opts | Measure-Object -Property Length -Maximum).Maximum + 4
+        $top    = '╔' + ('═' * $width) + '╗'
+        $title  = '🛠️ Windows-Menü'
+        $titleLine = '║' + (' ' * [math]::Floor(($width - $title.Length)/2)) + $title + (' ' * [math]::Ceiling(($width - $title.Length)/2)) + '║'
+        $sep    = '╠' + ('═' * $width) + '╣'
+        $bottom = '╚' + ('═' * $width) + '╝'
+
+        Write-Host ($top.PadLeft(([console]::WindowWidth + $top.Length)/2)) -ForegroundColor Yellow
+        Write-Host ($titleLine.PadLeft(([console]::WindowWidth + $titleLine.Length)/2)) -ForegroundColor Cyan
+        Write-Host ($sep.PadLeft(([console]::WindowWidth + $sep.Length)/2)) -ForegroundColor Yellow
+
+        foreach ($opt in $opts) {
+            $line = '║  ' + $opt.PadRight($width - 2) + '║'
+            Write-Host ($line.PadLeft(([console]::WindowWidth + $line.Length)/2)) -ForegroundColor Green
+        }
+
+        Write-Host ($bottom.PadLeft(([console]::WindowWidth + $bottom.Length)/2)) -ForegroundColor Yellow
+
+        $choice = Read-Host "Auswahl (1-4)"
+        switch ($choice) {
+            '1' { Deinstall-Bloatware }
+            '2' { Deactivate-Telemetry }
+            '3' { Update-Windows }
+            '4' { return }
+            default {
+                Write-Host "Ungültige Auswahl – bitte 1–4 eingeben." -ForegroundColor Red
+                Start-Sleep 1
+            }
         }
     }
 }
 
 
-# Hauptmenü mit der einmaligen Frage nach dem Wiederherstellungspunkt
 function Show-Menu {
-    param (
-        [string]$asciiLogo
-    )
-    
-    # Frage nach Wiederherstellungspunkt nur einmal stellen
-    $createRestorePoint = Read-Host "Möchten Sie einen Wiederherstellungspunkt erstellen? (J/N)"
-    if ($createRestorePoint -eq "J" -or $createRestorePoint -eq "j") 
-    {
-        Enable-SystemRestore
-    }
+    param([string]$asciiLogo)
+
+    # Erste Abfrage zum Wiederherstellungspunkt
+    $resp = Read-Host "Wiederherstellungspunkt erstellen? (J/N)"
+    if ($resp -match '^[Jj]$') { Enable-SystemRestore }
 
     while ($true) {
         Clear-Host
-
-        # ASCII-Logo mittig ausgeben
+        # Logo zentriert
         $logoLines = $asciiLogo -split "`n"
         foreach ($line in $logoLines) {
-            Write-Host ($line.PadLeft(([console]::WindowWidth + $line.Length) / 2)) -ForegroundColor Magenta
+            Write-Host ($line.PadLeft(([console]::WindowWidth + $line.Length)/2)) -ForegroundColor Magenta
         }
 
-        # "="-Zeichen mittig ausgeben
-        Write-Host ("=" * 40).PadLeft(([console]::WindowWidth + 40) / 2) -ForegroundColor Yellow
-        Write-Host ("Bitte wählen Sie eine Option:".PadLeft(([console]::WindowWidth + 25) / 2)) -ForegroundColor Cyan
-        Write-Host ("=" * 40).PadLeft(([console]::WindowWidth + 40) / 2) -ForegroundColor Yellow
-
-        $options = @(
-            "1. Performance-Menü",
-			"2. Netzwerk Menü",
-			"3. Software-Update",
-            "4. Windows Menü",
-			"5. Hardware Info",
-            "6. Beenden"
+        # Menüoptionen
+        $opts = @(
+            '1) Performance-Menü',
+            '2) Netzwerk-Menü',
+            '3) Software-Update',
+            '4) Windows-Tools-Menü',
+            '5) Hardware-Info',
+            '6) Beenden'
         )
+        # Dynamische Breite
+        $innerWidth = ($opts | Measure-Object -Property Length -Maximum).Maximum + 4
 
-        foreach ($option in $options) {
-            Write-Host ($option.PadLeft(([console]::WindowWidth + $option.Length) / 2)) -ForegroundColor Cyan
+        # Box zeichnen
+        $top    = '╔' + ('═' * $innerWidth) + '╗'
+        $title  = 'Hauptmenü'
+        $titleLine = '║' + (' ' * (($innerWidth - $title.Length)/2)) + $title + (' ' * (($innerWidth - $title.Length)/2)) + '║'
+        $sep    = '╠' + ('═' * $innerWidth) + '╣'
+        $bottom = '╚' + ('═' * $innerWidth) + '╝'
+
+        # Ausgabe
+        Write-Host ($top.PadLeft(([console]::WindowWidth + $top.Length)/2)) -ForegroundColor Yellow
+        Write-Host ($titleLine.PadLeft(([console]::WindowWidth + $titleLine.Length)/2)) -ForegroundColor Cyan
+        Write-Host ($sep.PadLeft(([console]::WindowWidth + $sep.Length)/2)) -ForegroundColor Yellow
+        foreach ($opt in $opts) {
+            $line = '║  ' + $opt.PadRight($innerWidth - 2) + '║'
+            Write-Host ($line.PadLeft(([console]::WindowWidth + $line.Length)/2)) -ForegroundColor Green
         }
+        Write-Host ($bottom.PadLeft(([console]::WindowWidth + $bottom.Length)/2)) -ForegroundColor Yellow
 
-        Write-Host ("=" * 40).PadLeft(([console]::WindowWidth + 40) / 2) -ForegroundColor Yellow
-
-        $selection = Read-Host "Geben Sie Ihre Wahl ein"
-
-        switch ($selection) {
-            
-			"1" { Show-PerformanceMenu }
-            "2" { Show-NetworkMenu }  # Funktionsaufruf
-			"3" { Upgrade-Software }
-			"4" { Show-WindowsMenu } 
-			"5" { Show-HardwareInfo}						# Funktionsaufruf
-            "6" { exit }
-            default { Write-Host "Ungültige Auswahl, bitte wählen Sie erneut." -ForegroundColor Red }
+        # Auswahl
+        $sel = Read-Host "Wahl (1-6)"
+        switch ($sel) {
+            '1' { Show-PerformanceMenu }
+            '2' { Show-NetworkMenu }
+            '3' { Upgrade-Software }
+            '4' { Show-WindowsMenu }
+            '5' { Show-HardwareInfo }
+            '6' { exit }
+            default { Write-Host "Ungültige Auswahl!" -ForegroundColor Red; Start-Sleep 1 }
         }
     }
 }
+
+
 
 $asciiLogo = @"
  _______  _______ _________ _______  _______ _________
